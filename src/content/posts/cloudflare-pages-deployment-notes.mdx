@@ -1,0 +1,194 @@
+---
+title: 全程交给 AI：把个人网站部署到 Cloudflare Pages 的踩坑笔记
+type: original
+authorship: co-authored
+publishDate: 2026-05-27
+description: 从 Astro 5 + MDX 骨架到 harlon.wang 上线的完整流程，记录 Cloudflare Pages 部署 + 域名绑定中遇到的非显然问题。
+tags:
+  - Cloudflare
+  - Cloudflare Pages
+  - 部署
+  - 域名
+  - Astro
+draft: false
+---
+
+这周把 harlon.wang 从零到上线，全程用 AI 协作 + 浏览器自动化操作。流程不复杂，但有几个**只有实操才能撞到**的细节，文档里查不到，特地记下来。
+
+## 技术栈
+
+- **静态站**：Astro 5 + MDX，Content Collections + Zod
+- **托管**：Cloudflare Pages（Free 计划）
+- **域名**：harlon.wang 在腾讯云注册，NS 切到 Cloudflare 完整托管
+
+## 完整流程一览
+
+```
+本地 Astro 骨架
+    ↓ gh repo create + push
+GitHub: HarlonWang/harlon-wang
+    ↓ Cloudflare Pages 连 Git，配 build
+*.pages.dev 临时域名（首次部署成功）
+    ↓ Pages 项目 → Custom domains → 输入 harlon.wang
+Cloudflare 引导添加 zone harlon.wang（Free）
+    ↓ 拿到两个 NS（everton/thea.ns.cloudflare.com）
+腾讯云控制台 → 改 NS（这一步要微信扫码 MFA）
+    ↓ 等 5-30 分钟
+Cloudflare 邮件通知 zone active
+    ↓ 回 Pages domains → Activate domain
+自动配 CNAME @ → harlon-wang.pages.dev + Universal SSL 自动签发
+    ↓
+https://harlon.wang/ 上线 ✅
+```
+
+下面是踩坑实录，按遇到顺序排。
+
+---
+
+## 坑 1：浏览器缩放让 CSS 改动「看起来没变」
+
+最早期 dev 阶段，我把内容区从 720px 调到 860px，刷新后**视觉完全没变**。一度怀疑是 HMR 没生效。
+
+诊断脚本一跑就明白：
+
+```js
+{
+  innerWidth: 2560,
+  outerWidth: 1920,
+  innerWidth / outerWidth: 1.333,   // ≈ 1/0.75
+  devicePixelRatio: 1.5,
+}
+```
+
+浏览器对 `localhost:4321` 这个 origin 被设了 **75% zoom**。Chrome 按 origin 持久化 zoom level，之前不知道什么时候按过 `Cmd -`。
+
+**教训**：CSS 改完视觉没变之前，先核对：
+
+1. innerWidth ÷ outerWidth 是不是 1（不是就是被 zoom 了）
+2. `getComputedStyle(main).maxWidth` 是不是真的更新（是就说明 CSS 生效，问题在显示层）
+
+按 `Cmd + 0` 重置 zoom，问题秒解。
+
+## 坑 2：Cloudflare 默认推 Workers Builds，纯静态站走老 Pages 流程更顺
+
+进入 "Create application"，第一眼是个统一的 "Continue with GitHub" 入口——这是 **Workers Builds 新架构**，用 Worker runtime 包静态资源。
+
+对 Astro 纯 static 输出来说 overkill。真正的入口在页面下方的小字：
+
+> Looking to deploy Pages? **Get started**
+
+点这个才进老 Pages 流程，纯 CDN 静态托管、配置简单、Framework preset 还能选 "Astro"。
+
+## 坑 3：从 Pages 项目入口反向加 zone 比 `/add-site` 顺
+
+`/add-site` 路径偶尔卡 loading（React app 不渲染）。绕过去的办法：
+
+1. 直接进 Pages 项目的 **Custom domains**
+2. 输入 `harlon.wang` → Continue
+3. Cloudflare 检测到 zone 不在账号下，弹 "Begin DNS transfer" 链接
+4. 点过去就是添加 zone 流程
+
+这条路径比官方 add-site 入口稳得多。
+
+## 坑 4：Build 配置三件套必须显式写
+
+Cloudflare 自动检测 `pnpm-lock.yaml` 用 pnpm，但**显式写更稳**：
+
+```
+Build command:           pnpm install --frozen-lockfile && pnpm build
+Build output directory:  dist
+Environment variable:    NODE_VERSION=22
+```
+
+`NODE_VERSION` 不设的话 Cloudflare 可能用偏老的 Node，Astro 5 在老 Node 上 build 容易挂。
+
+## 坑 5：NS 切换是不可自动化断点
+
+腾讯云改 DNS 服务器要**微信扫码二次验证**（个人账号默认开启）。这一步无论用什么工具都得人工。其他主流注册商（阿里云、GoDaddy、Namecheap）类似——都有 MFA 边界。
+
+写自动化流程时这种点必须提前标出，不然容易卡在中间不知道怎么办。
+
+## 坑 6：浏览器自动化的「假打码」
+
+用 JS 通过 React state 设 input value 时，验证读 `.value` 看到的是：
+
+```
+"[BLOCKED: JWT token]"
+"[BLOCKED: Sensitive key]"
+```
+
+第一反应是「填失败了」，结果是浏览器扩展的**安全过滤误判**——只要值里含 `ns.` 或形似 token 的字符串，read 时会被自动打码，**不影响实际写入和提交**。
+
+验证方法：看下游表单的 enable 状态、是不是出现了下一步按钮。不要看到 `[BLOCKED]` 就重试。
+
+## 坑 7：Cloudflare Dashboard SPA 偶尔不渲染
+
+zone 刚激活后那几分钟，Cloudflare dashboard 可能整个 React app 不渲染：
+
+```
+document.body.innerText.length === 52   // 只剩浏览器扩展的提示
+document.querySelector('#react-app').children.length === 0
+```
+
+刷新、navigate 都没用。**唯一解：关掉这个 tab，新开一个**。背后大概是 service worker 或 session 状态有问题，重连就好。
+
+## 坑 8：React-friendly 的 setNativeValue
+
+直接 `input.value = 'xxx'` 在 React 项目里**不会触发 state 更新**——表单看着填了，但下一步按钮还是 disabled。必须用：
+
+```js
+const setNativeValue = (el, value) => {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype, 'value'
+  ).set;
+  setter.call(el, value);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+};
+```
+
+通过原型链调 native setter，再手动派发 input/change 事件，React 才会接收变化。这是写浏览器自动化的基本功，但第一次写很容易踩。
+
+---
+
+## 验证手段（CLI）
+
+```bash
+# DNS 解析
+dig +short A harlon.wang
+dig harlon.wang | grep SOA            # 看 authoritative
+
+# HTTP + SSL
+curl -sI https://harlon.wang/         # 200 + server: cloudflare 即成功
+curl -s https://harlon.wang/ | grep '<title>'
+
+# 部署链路检查（要看 cf-ray 头确认走 Cloudflare）
+curl -sI https://harlon.wang/ | grep -i cf-ray
+```
+
+国内环境 dig 偶尔被污染，多看几个 resolver：
+
+```bash
+dig +short NS harlon.wang @8.8.8.8     # Google
+dig +short NS harlon.wang @1.1.1.1     # Cloudflare
+```
+
+## 关于「要不要沉淀为 skill」
+
+最后一个反思：这次完整流程是不是应该沉淀为可复用的 skill？
+
+我的答案是**不做 skill**，做这三件事更划算：
+
+1. **memory**：把上面这些坑（特别是 [BLOCKED] 假打码、Cloudflare SPA 不渲染、Workers Builds vs 老 Pages 的选择）存为跨对话记忆，下次任何场景都能复用
+2. **GitHub template 仓库**：把骨架仓库设为 template，下次新站点直接 `Use this template` 派生
+3. **这篇文章**：就是你正在读的，把过程沉淀给自己也给后来人看
+
+不做 skill 的原因：
+
+- 个人网站部署是低频事件
+- 不可自动化的断点（OAuth、MFA、扫码）skill 也消不掉
+- Cloudflare UI 半年一变，skill 凝固容易过时
+
+经验沉淀的形式要选**最贴合知识半衰期**的：踩坑细节适合 memory（活的），可复用代码适合 template repo（半活的），完整故事适合文章（死的，但有上下文）。
+
+写完发现，**写文章本身就是最好的复盘工具**。

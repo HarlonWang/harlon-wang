@@ -12,6 +12,17 @@ const { entry } = Astro.props;
 const { data } = entry;
 const isTranslation = data.type === 'translation';
 const dateText = data.publishDate.toISOString().slice(0, 10);
+
+const badgeMap = {
+  translation: '🌐 译文',
+  'ai-led': '🤖 AI 写',
+  'co-authored': '🤝 协作',
+  'human-led': '✍️ 我写',
+} as const;
+
+const badge = isTranslation
+  ? badgeMap.translation
+  : badgeMap[data.authorship ?? 'human-led'];
 ---
 
 <BaseLayout title={data.title} description={data.description}>
@@ -21,7 +32,7 @@ const dateText = data.publishDate.toISOString().slice(0, 10);
       <p class="post-meta">
         <time datetime={dateText}>{dateText}</time>
         <span> · </span>
-        <span>{isTranslation ? '🌐 译文' : '✍️ 原创'}</span>
+        <span>{badge}</span>
         {isTranslation && data.translator && (
           <>
             <span> · </span>

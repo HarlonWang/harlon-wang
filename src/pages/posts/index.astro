@@ -10,7 +10,10 @@ const posts = (await getCollection('posts', ({ data }) => !data.draft)).sort(
 
 <BaseLayout title="Posts" description="文章 — 翻译与原创">
   <h1>Posts</h1>
-  <p class="post-meta">文章 {posts.length} 篇 · 含翻译 🌐 与原创 ✍️</p>
+  <p class="post-meta" style="margin-bottom: 0.3em;">文章 {posts.length} 篇</p>
+  <p class="post-legend">
+    标签：🌐 译（翻译稿）· 🤖 AI 写（主笔）· 🤝 协作（五五开）· ✍️ 我写（主笔）
+  </p>
   <section>
     {posts.map((p) => <PostCard entry={p} />)}
   </section>

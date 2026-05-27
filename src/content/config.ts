@@ -7,6 +7,7 @@ const posts = defineCollection({
     .object({
       title: z.string(),
       type: z.enum(['translation', 'original']),
+      authorship: z.enum(['ai-led', 'co-authored', 'human-led']).optional(),
       publishDate: z.coerce.date(),
       description: z.string(),
       tags: z.array(z.string()).default([]),
@@ -22,9 +23,21 @@ const posts = defineCollection({
         .optional(),
       translator: z.string().default('Harlon Wang'),
     })
-    .refine((data) => data.type !== 'translation' || !!data.source, {
-      message: "type === 'translation' 时 source 必填",
-      path: ['source'],
+    .superRefine((data, ctx) => {
+      if (data.type === 'translation' && !data.source) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "type === 'translation' 时 source 必填",
+          path: ['source'],
+        });
+      }
+      if (data.type === 'original' && !data.authorship) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "type === 'original' 时 authorship 必填",
+          path: ['authorship'],
+        });
+      }
     }),
 });
 

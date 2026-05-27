@@ -8,7 +8,18 @@ interface Props {
 const { entry } = Astro.props;
 const { data } = entry;
 const dateText = data.publishDate.toISOString().slice(0, 10);
-const badge = data.type === 'translation' ? '🌐 译' : '✍️ 原';
+
+const badgeMap = {
+  translation: '🌐 译',
+  'ai-led': '🤖 AI 写',
+  'co-authored': '🤝 协作',
+  'human-led': '✍️ 我写',
+} as const;
+
+const badge =
+  data.type === 'translation'
+    ? badgeMap.translation
+    : badgeMap[data.authorship ?? 'human-led'];
 ---
 
 <article class="post-card">
