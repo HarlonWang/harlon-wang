@@ -1,0 +1,35 @@
+# build output
+dist/
+.output/
+
+# dependencies
+node_modules/
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# environment variables
+.env
+.env.production
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Astro
+.astro/
+
+# 本地个人笔记（按 spec § 5.1 约定）
+CLAUDE.local.md
+
+# superpowers brainstorm 记录
+.superpowers/

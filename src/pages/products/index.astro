@@ -1,0 +1,59 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { getCollection } from 'astro:content';
+
+const products = (await getCollection('products')).sort(
+  (a, b) => b.data.year - a.data.year
+);
+---
+
+<BaseLayout title="Products" description="作品集 — 个人项目与开源库">
+  <h1>Products</h1>
+  <p class="post-meta">作品集，按 year 倒序</p>
+  <section>
+    {
+      products.map((p) => (
+        <article class="product-card">
+          <h3 class="product-card-title">
+            <a href={`/products/${p.id}/`}>{p.data.name}</a>
+            {p.data.status === 'archived' && (
+              <span style="color: var(--color-muted); font-weight: normal; font-size: 0.9em;">
+                {' '}
+                · archived
+              </span>
+            )}
+          </h3>
+          <p class="product-card-meta">
+            {p.data.year}
+            {p.data.stars !== undefined && ` · ⭐ ${p.data.stars}`}
+          </p>
+          <p class="product-card-desc">{p.data.description_zh}</p>
+          <p class="product-card-links">
+            {p.data.links?.github && (
+              <a href={p.data.links.github} target="_blank" rel="noopener">
+                GitHub
+              </a>
+            )}
+            {p.data.links?.website && (
+              <a href={p.data.links.website} target="_blank" rel="noopener">
+                Website
+              </a>
+            )}
+            {p.data.links?.app && (
+              <a href={p.data.links.app} target="_blank" rel="noopener">
+                App
+              </a>
+            )}
+          </p>
+        </article>
+      ))
+    }
+  </section>
+  {
+    products.length === 0 && (
+      <p style="color: var(--color-muted); margin-top: 2em;">
+        还没有作品被记录在这里。
+      </p>
+    )
+  }
+</BaseLayout>

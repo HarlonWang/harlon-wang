@@ -1,0 +1,26 @@
+---
+interface Props {
+  source: {
+    title: string;
+    url: string;
+    author: string;
+    siteName: string;
+    publishDate?: Date;
+  };
+  translator: string;
+}
+
+const { source, translator } = Astro.props;
+---
+
+<aside class="translation-banner" aria-label="译文信息">
+  <p class="translation-banner-line">
+    本文译自 <strong>{source.siteName}</strong> · 原作者 <strong>{source.author}</strong>
+  </p>
+  <p class="translation-banner-line">
+    原文：<a href={source.url} target="_blank" rel="noopener">{source.title}</a>
+  </p>
+  <p class="translation-banner-line">
+    译者：<strong>{translator}</strong>
+  </p>
+</aside>

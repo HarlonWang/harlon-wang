@@ -1,0 +1,28 @@
+---
+import type { CollectionEntry } from 'astro:content';
+
+interface Props {
+  entry: CollectionEntry<'posts'>;
+}
+
+const { entry } = Astro.props;
+const { data } = entry;
+const dateText = data.publishDate.toISOString().slice(0, 10);
+const badge = data.type === 'translation' ? '🌐 译' : '✍️ 原';
+---
+
+<article class="post-card">
+  <h3 class="post-card-title">
+    <a href={`/posts/${entry.id}/`}>{data.title}</a>
+  </h3>
+  <p class="post-card-meta">
+    <span class="post-card-badge">{badge}</span>
+    <time datetime={dateText}>{dateText}</time>
+    {
+      data.type === 'translation' && data.source && (
+        <span> · 译自 {data.source.siteName}</span>
+      )
+    }
+  </p>
+  <p class="post-card-desc">{data.description}</p>
+</article>

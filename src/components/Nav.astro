@@ -1,0 +1,24 @@
+---
+const path = Astro.url.pathname;
+const links = [
+  { href: '/posts', label: 'Posts' },
+  { href: '/products', label: 'Products' },
+  { href: '/about', label: 'About' },
+];
+const isActive = (href: string) => path === href || path.startsWith(href + '/');
+---
+
+<nav class="site-nav">
+  <div class="site-nav-inner">
+    <a href="/" class="logo">harlon.wang</a>
+    <div class="site-nav-links">
+      {
+        links.map((l) => (
+          <a href={l.href} class={isActive(l.href) ? 'active' : ''}>
+            {l.label}
+          </a>
+        ))
+      }
+    </div>
+  </div>
+</nav>

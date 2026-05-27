@@ -1,0 +1,42 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import TranslationBanner from '@/components/TranslationBanner.astro';
+import TranslationFooter from '@/components/TranslationFooter.astro';
+import type { CollectionEntry } from 'astro:content';
+
+interface Props {
+  entry: CollectionEntry<'posts'>;
+}
+
+const { entry } = Astro.props;
+const { data } = entry;
+const isTranslation = data.type === 'translation';
+const dateText = data.publishDate.toISOString().slice(0, 10);
+---
+
+<BaseLayout title={data.title} description={data.description}>
+  <article>
+    <header>
+      <h1>{data.title}</h1>
+      <p class="post-meta">
+        <time datetime={dateText}>{dateText}</time>
+        <span> · </span>
+        <span>{isTranslation ? '🌐 译文' : '✍️ 原创'}</span>
+        {isTranslation && data.translator && (
+          <>
+            <span> · </span>
+            <span>译者 {data.translator}</span>
+          </>
+        )}
+      </p>
+    </header>
+
+    {isTranslation && data.source && (
+      <TranslationBanner source={data.source} translator={data.translator} />
+    )}
+
+    <slot />
+
+    {isTranslation && data.source && <TranslationFooter source={data.source} />}
+  </article>
+</BaseLayout>

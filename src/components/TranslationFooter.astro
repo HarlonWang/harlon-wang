@@ -1,0 +1,25 @@
+---
+interface Props {
+  source: {
+    url: string;
+    author: string;
+    siteName: string;
+  };
+}
+
+const { source } = Astro.props;
+---
+
+<footer class="translation-footer">
+  <p>
+    本译文采用 <a
+      href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh"
+      target="_blank"
+      rel="noopener">CC BY-NC-SA 4.0</a
+    > 协议发布，仅供学习交流。
+  </p>
+  <p>
+    原作品版权归 <strong>{source.author}</strong>（{source.siteName}）所有，原文请见
+    <a href={source.url} target="_blank" rel="noopener">这里</a>。
+  </p>
+</footer>
