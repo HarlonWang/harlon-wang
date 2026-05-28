@@ -1,0 +1,194 @@
+---
+title: 搭一条翻译流水线：自动化划在哪
+type: original
+authorship: co-authored
+publishDate: 2026-05-28
+description: 想稳定翻译 Anthropic Engineering 到个人站，但人工太累、全自动又掉品质。把自动化划在「发现 + 草稿」这条线上，剩下的留给品味。
+tags:
+  - AI
+  - Claude Code
+  - 自动化
+  - 工作流
+draft: false
+---
+
+> 想稳定翻译 Anthropic Engineering 的好文到自己站，但人工记着去看太累、全自动又会掉品质。这次和 Claude Code 一起搭了一条「半自动」流水线：**自动化只走到「发现 + 草稿」**，再往后是品味问题，不让 AI 代劳。
+
+## 起因
+
+Anthropic Engineering 平均每月发 1-2 篇高质量技术文章 —— 像 *Building effective agents*、*Effective context engineering for AI agents*、*Writing effective tools for agents* 这种，都值得翻译沉淀。
+
+但维持「定期发现 + 选择性翻译」这件事手动做太累：
+
+- 我不会每周记得去刷一遍
+- 全靠 RSS 订阅器又会被一堆消息淹没
+- 临时打鸡血翻一篇，下个月就忘了
+
+所以想给自己搭一条流水线。但马上撞到一个设计问题。
+
+---
+
+## 一、设计原则：自动化的边界划在哪 ⭐
+
+最诱人的方案是端到端 AI 流水线：
+
+> 监测原文 → AI 翻译 → AI 写 frontmatter → AI 自动开 PR → review 通过即合并 → CF Pages 自动部署
+
+听起来很酷，但走两步就能想明白这条路不通：
+
+| 问题 | 实际后果 |
+|---|---|
+| AI 翻译质量不稳定 | 头几周还认真 review，**到第三个月你就只是点 merge 了** |
+| review 成本反弹 | 看 AI 译稿找问题，比自己写一稿还累 |
+| 风格漂移 | 每篇都「机器味」，自己的语言味道被稀释掉 |
+
+**结论**：自动化能做的是「省去手动盯梢」和「准备好原料」，**不能替你做品味决策**。
+
+划清边界：
+
+```
+┌─ 自动 ───────────────────────┐   ┌─ 手动 ────────────────────┐
+│ 月度 cron 扫原文站           │   │ 看 issue 列表挑感兴趣的    │
+│ 发现新文章 / 检测原文更新    │   │ 翻译时风格、节奏、表格化   │
+│ 开 issue 提醒                │ → │ 译者注、删减、原创总结段   │
+│ 准备翻译初稿                 │   │ 决定 commit + 发布时机     │
+└──────────────────────────────┘   └────────────────────────────┘
+```
+
+后面四个阶段都在沿着这条边界设计。
+
+---
+
+## 二、四个阶段
+
+### 阶段 1：发现（自动）
+
+最初打算用 RSS 订阅，结果 Anthropic 没提供 feed —— HEAD-probe 了 `/rss.xml`、`/feed.xml` 几个常见路径都 404。
+
+**但发现了 sitemap.xml**，而且比 RSS 更值钱：
+
+```xml
+<url>
+  <loc>https://www.anthropic.com/engineering/building-effective-agents</loc>
+  <lastmod>2026-04-13T17:46:47.000Z</lastmod>
+</url>
+```
+
+意外收获：**`lastmod` 让我能检测已译文章原文被官方编辑过** —— 这是 RSS 的 `<pubDate>` 给不了的能力，正好对应「文章被悄悄改了，我可能需要补译」的场景。
+
+阶段实现：
+
+- GitHub Action 每月 1 号跑一次（也支持手动触发）
+- 抓 sitemap、筛 `/engineering/*` URL
+- diff 仓库内一个状态文件
+- **新文章** 自动开 issue 提醒；**已译文章原文更新** 单独标 `outdated`
+
+### 阶段 2：筛选（人工）
+
+这一步**故意不自动化**。脚本只负责开 issue，**我自己决定要不要翻**。
+
+每个 issue 长这样：
+
+- 原文 URL
+- sitemap 上的 lastmod 时间
+- 一行触发命令：`/translate-eng <URL>`
+
+如果我决定不翻，就在状态文件里把状态标成 `skipped` 并写理由（受众太窄 / 内容过时 / 不适合中文读者……）。**skip 必须有理由** 这一条很重要 —— 它逼我每次面对 issue 都做主动判断，而不是任由 backlog 积压。
+
+### 阶段 3：翻译（半自动）
+
+这一步是 **Claude Code 的 slash command** 起作用的地方。
+
+我把"每次翻译都要重复交代的风格、frontmatter schema、术语处理规则"做成一个 `.claude/commands/translate-eng.md` 提示词模板，绑定参数 `$ARGUMENTS`：
+
+```
+.claude/commands/translate-eng.md
+└── 抓原文 → 按 src/content/config.ts 的 schema 生成 MDX
+   → 翻译风格参考 claude-code-best-practices.mdx
+   → 中英文之间加空格、术语保留英文加括号注解、表格化对照…
+```
+
+之后在 Claude Code 里打 `/translate-eng https://...`，等于把整段提示词 + URL 一起发给 AI，对方按模板抓原文、生成符合 schema 的 MDX 草稿。
+
+**关键**：这里 AI 出的是**草稿**，不是终稿。我后续会：
+
+- 调整词序、口语化重写一些段落
+- 加表格、合并/拆分原文段落以更顺
+- 加译者注（原文没有的背景说明）
+- 删原文里多余的客套段
+
+> **这才是「不让 AI 替我决定」的地方** —— AI 给我"下笔不空"的起点，但最后长什么样我说了算
+
+### 阶段 4：发布（自动）
+
+这一步本就不需要新建什么。Astro + Cloudflare Pages，commit 推到 main 即触发部署。`type: translation` 的 schema 验证、tags 渲染、文章页布局都已经在站点结构里就位。
+
+---
+
+## 三、几个关键 tradeoff
+
+| 选择 | 理由 |
+|---|---|
+| **不让 AI 自动开 PR** | review AI 出的 diff 比自己写一稿还累，反而拖慢节奏 |
+| **不做翻译 backlog** | 积压会变成债务和心理负担。skip 就 skip，记录理由比攒着体面 |
+| **状态文件放仓库** | git 当 audit log，谁/何时把某篇标 `skipped` 都可追溯 |
+| **不追求全译** | 候选列表里只有 1/3 适合中文受众；硬翻冷门文反而稀释站点定位 |
+| **巡检每月 1 次** | Anthropic 平均 1-2 篇/月，更频繁也没东西可看 |
+
+---
+
+## 四、第一次跑通的体感
+
+种子状态文件里灌了当时 sitemap 已有的 25 篇文章 + 它们的 lastmod，让脚本以此为基线。
+
+第一次手动触发 workflow 跑通：
+
+```
+sitemap engineering urls: 25
+seen.json entries: 25
+新增: 0
+lastmod 变化: 0
+no changes
+```
+
+「no changes」一开始让我怀疑脚本是不是吞了什么。**做了个反向验证**：把状态文件里某一项暂时移除，模拟"有新文章"的场景：
+
+```
+mock seen.json size: 24
+would open issues: 1
+  {"kind":"new", "url":".../building-effective-agents", ...}
+```
+
+逻辑健康。「no changes」就是真没新文章 —— 也符合 sitemap 的实际节奏。
+
+随后用 slash command 翻了 Anthropic 的 [Building effective agents](/posts/building-effective-agents/) 当首发。从触发 slash command 到 git push，**主体工作量集中在「读 + polish」**，提示词模板省下来的是琐碎的 frontmatter 拼装和风格交代。
+
+---
+
+## 直觉：什么该自动化，什么不该
+
+⭐ **能自动化的**：
+
+- 「我应该看哪些文章」（发现）
+- 「原文被改过吗」（检测）
+- 「下笔的初稿」（草稿）
+- 「填好元数据骨架」（schema）
+- 「commit 之后的部署」（发布）
+
+⭐ **不该自动化的**：
+
+- 「这篇值不值得翻」（品味）
+- 「中文怎么读起来更顺」（语感）
+- 「哪段该删、哪段该加译者注」（编辑判断）
+- 「现在发还是过两天发」（节奏）
+
+划清这条线，AI 就还在帮你；划错了，**你就在帮 AI 生产稿子**。
+
+---
+
+完整实现散在仓库这几个位置：
+
+- `scripts/check-engineering.mjs` —— 发现脚本
+- `.github/workflows/check-anthropic-engineering.yml` —— 月度 cron
+- `.claude/commands/translate-eng.md` —— 翻译 slash command
+- `.translation-queue/seen.json` —— 状态文件
