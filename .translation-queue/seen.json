@@ -75,8 +75,10 @@
     },
     "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents": {
         "lastmod": "2026-01-06T15:31:12.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "effective-context-engineering-for-ai-agents",
+        "translatedAt": "2026-05-28"
     },
     "https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents": {
         "lastmod": "2025-11-26T18:07:21.000Z",
@@ -100,8 +102,10 @@
     },
     "https://www.anthropic.com/engineering/how-we-contain-claude": {
         "lastmod": "2026-05-28T10:01:59.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "how-we-contain-claude",
+        "translatedAt": "2026-05-28"
     },
     "https://www.anthropic.com/engineering/infrastructure-noise": {
         "lastmod": "2026-04-24T14:21:28.000Z",
@@ -115,8 +119,10 @@
     },
     "https://www.anthropic.com/engineering/multi-agent-research-system": {
         "lastmod": "2026-01-06T15:09:32.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "multi-agent-research-system",
+        "translatedAt": "2026-05-28"
     },
     "https://www.anthropic.com/engineering/swe-bench-sonnet": {
         "lastmod": "2025-03-19T20:43:04.000Z",
@@ -125,7 +131,9 @@
     },
     "https://www.anthropic.com/engineering/writing-tools-for-agents": {
         "lastmod": "2026-01-06T15:05:23.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "writing-tools-for-agents",
+        "translatedAt": "2026-05-28"
     }
 }

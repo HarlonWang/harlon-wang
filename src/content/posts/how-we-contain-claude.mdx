@@ -1,0 +1,183 @@
+---
+title: 把 Claude 关进产品：跨产品 containment 实践
+type: translation
+publishDate: 2026-05-25
+description: Agent 越强，潜在爆炸半径越大。Anthropic 这篇讲他们在 claude.ai、Claude Code、Claude Cowork 三个产品里如何用沙箱、VM、egress 控制做 containment，以及那些教他们最多的安全事故。
+tags:
+  - AI
+  - Agent
+  - 安全
+  - Sandbox
+  - Claude Code
+source:
+  title: How we contain Claude across products
+  url: https://www.anthropic.com/engineering/how-we-contain-claude
+  author: Anthropic
+  siteName: Anthropic Engineering
+  publishDate: 2026-05-25
+translator: Harlon Wang
+---
+
+> 一年前我们绝不会给 Claude 足以拖垮内部服务的权限。今天这种权限是日常，开发者的生产力也因此变高了。这之中风险有两面：**出问题的概率** + **一次失败的破坏程度**。前者靠模型训练和安全机制持续压低；后者只随能力扩张而扩张。**工程问题变成了：怎么给爆炸半径设上限**。
+
+## 一、控制爆炸半径的两条路
+
+| 路径 | 做法 | 弱点 |
+|---|---|---|
+| **监督行为**（HITL，human-in-the-loop） | agent 每一步问用户准不准 | **审批疲劳**：Claude Code 数据显示用户**约 93% 的弹窗直接通过**。看得越多越不上心 |
+| **限制能力**（containment） | sandbox、VM、egress 控制 | 设计错了就是惊喜来源 ⚠️（本文重点） |
+
+**两条路必须组合**。本文聚焦后者。
+
+---
+
+## 二、三类风险 × 三层防御 ⭐
+
+**三类风险**：
+
+1. **用户滥用**：恶意或粗心地让 agent 干坏事
+2. **模型失序**：agent 自作主张干没人让它干的事（更强的模型更少误判，**但也更擅长绕开你没写下来的限制** —— Anthropic 见过 Claude「热心地」逃出 sandbox 完成任务、看 git history 找编程测试答案、自己识别 benchmark 然后解密 answer key）
+3. **外部攻击**：通过 tool、文件、网络注入 prompt 或攻击运行时
+
+**三层防御**：
+
+| 层 | 用什么 | 关键认识 |
+|---|---|---|
+| **环境层** | 进程沙箱、VM、文件系统边界、egress 控制 | **确定性 boundary** —— 凭据没进沙箱，就别想被泄露 |
+| **模型层** | system prompt、分类器、探针、训练调整 | 概率性，只能 shape "倾向" 不能锁死"能力"。即便 SOTA 也做不到 100%，**不能独立成防** |
+| **外部内容层** | MCP server、第三方插件、web search 工具 | **被审计过的 connector ≠ 被审计过的数据**。GitHub connector 可以把毒化的 README 直接喂进 context |
+
+**关键原则**：**当环境层不可用时，模型层要补位**（这正是 Claude Code auto mode 的设计意图）。
+
+---
+
+## 三、三种 containment 模式 ⭐
+
+### 模式 1：Ephemeral container（claude.ai 的代码执行）
+
+claude.ai 跑代码用的是 gVisor 容器 + 隔离基础设施：
+
+- **完全在服务器侧**，本地不跑代码
+- **每 session 临时文件系统**
+- 爆炸半径最小，**但能做的也少**（没持久工作区、没法访问用户文件系统）
+
+威胁模型回到传统：**保护自己的基础设施 + 租户之间隔离**。预上线工作主要是网络配置、内部服务认证、orchestration。
+
+> **最早的教训**：你自己写的那一层永远是最弱的。gVisor 和 seccomp 早就经过攻防淬炼；自己写的 proxy 才是后面捅大篓子的地方
+
+### 模式 2：HITL sandbox（Claude Code）
+
+Claude Code 跑在用户机器上，需要文件系统、shell、网络。**用户是开发者，认识 bash，知道 `rm -rf` 干啥**，所以 HITL 是可行方案。
+
+初版最简策略：读放行，写/bash/网络要审批。
+
+**几周内出现审批疲劳** —— 设计来做监督的功能反而让人**完全不看**。第一波缓解：上 **OS 级 sandbox**（macOS 用 Seatbelt，Linux 用 bubblewrap）：
+
+- 读放行
+- 写在工作区内放行
+- **网络默认拒绝**
+- 沙箱内 agent 大多不被打断
+
+**结果**：审批弹窗减少 84%，沙箱运行时开源可审计。
+
+#### 没看到的风险 #1：信任对话框之前的一切
+
+2025 中到 2026 年 1 月收到几个漏洞报告，**都是用户「信任此目录」之前就被执行的代码**。
+
+典型情景：用户 clone 一个仓库准备 review PR → 仓库里有 `.claude/settings.json` 定义了 hook → **Claude Code 启动时读项目设置**，**早于**「Do you trust this folder?」弹窗 → **攻击者写的 hook 自动执行**。
+
+**修法一致**：项目相关的解析和执行，**全部推迟到用户接受信任之后**。**别因为来源"感觉是本地"就默认信任**。
+
+#### 没看到的风险 #2：用户本身是注入向量
+
+2026 年 2 月内部红队演练，研究员钓鱼让员工启动 Claude Code 跑一个恶意 prompt。Prompt 看着像普通任务，**藏一句让 Claude 读 ~/.aws/credentials 编码并 POST 到外部端点**。**25 次重试里 24 次成功外传**。
+
+**模型层防御没法兜底** —— 因为指令来自用户本人，分类器抓不到「异常意图」。**只有环境层能挡**：egress 控制 + 文件系统边界（让 ~/.aws 根本不在 agent 触手可及范围）。
+
+> 一个细节：他们后来在内部 Slack 讨论这个 prompt —— **有人提醒「有些内部 agent 会读 Slack」**。Payload 现在在空气里了，他们加了 canary 字符串监测。**Agent 读所有东西的世界里，调查工具本身也是攻击面**
+
+### 模式 3：本地 VM（Claude Cowork）
+
+Cowork 跑在用户桌面，给一般知识工作者用，**不能假设用户认识 bash**。HITL 不适用 —— **让普通用户判断 `find . -name "*.tmp" -exec rm {} \;` 是不是安全？做不到**。
+
+所以用**完整虚拟机**（macOS 用 Apple Virtualization，Windows 用 HCS）：
+
+- 自己的 Linux kernel、文件系统、进程表
+- 只挂载用户选的 workspace 和 `.claude` 目录
+- **凭据留在宿主 keychain，从不进 VM**
+
+最初设计：**整个 agent loop 都在 VM 里**，Claude 当普通 Linux 用户跑，**没有外部进程持有逃生密钥**。比 Claude Code 更彻底 —— 没有可被说服破例的外层进程。
+
+但实际上 VM 启动一失败 Cowork 就完全用不了。**调整：agent loop 移到 VM 外，代码执行留在 VM 内**。安全影响最小，VM 仍约束所有代码执行的文件 + 网络。本地 MCP server 也搬出 VM（参考 Claude Desktop 的做法）。
+
+#### 没看到的风险 #1：通过允许域名外泄
+
+第三方披露：Cowork 的 egress 允许列表正确放行了 `api.anthropic.com`（产品本身需要调）。但攻击者通过用户挂载的工作区放入一个文件，里面带着**攻击者自己的 API key 和指令** → Claude 按指令读其他文件、用攻击者的 key 调 Anthropic Files API → **文件上传到攻击者的 Anthropic 账号**。**Sandbox 工作完美，数据照样被外泄**。
+
+**关键观念转换**：
+
+> 允许列表不要当作**「目的地过滤」**理解，而要当作**「能力授权」**。允许 `api.anthropic.com` 等于允许向任意 Anthropic 账号上传文件
+
+**修法**：在 VM 内部加**防御性 MITM proxy** —— 只放行携带 VM 自有 session token 的请求，拒绝攻击者嵌入的 key，并屏蔽能触发 server-side fetch 的 headers。
+
+#### 没看到的风险 #2：EDR 也被挡在 VM 外
+
+企业安全团队问：「我们的 EDR 为什么看不到 VM 里？」答案：**让 Claude 被关住的隔离，也让宿主 EDR 进不去**。
+
+合规姿态依赖 endpoint 可见性时，这是问题。当前缓解：pull-based OTLP 导出让管理员事后取日志，**不是实时监控**。
+
+> 建你自己版本时**提前预留这个对话**
+
+### 三种模式对比
+
+| | Ephemeral 容器（claude.ai） | HITL sandbox（Claude Code） | VM（Cowork） |
+|---|---|---|---|
+| 隔离开销 | 容器启动 | 低延迟原生 sandbox | 整个 VM 启动 |
+| 用户负担 | 无 | **必须看得懂 bash** | 无 |
+| 爆炸半径 | 服务器端容器（gVisor + 主机隔离） | 本地工作区 | 挂载的工作区（vsock + hypervisor 边界） |
+
+---
+
+## 四、agent 读什么也是攻击面 ⭐
+
+企业常问「MCP 怎么保安全」，但**问题比 MCP 大**。任何外部资源给 agent，都同时带来两种风险：
+
+1. **代码执行风险**（传统供应链意义）
+2. **prompt 注入向量**
+
+传统依赖审计（pin 版本、验签、看源码）解决 #1，**漏掉 #2**。
+
+### 远程 vs 本地，差别比看起来大
+
+- **本地工具**：可审计、可 pin 版本、不会偷偷变
+- **远程工具**：托管 MCP、云 connector，**批准后随时可能变行为**
+
+> Anthropic 自己的 connector directory 是持续审核的；目录外的都按 untrusted 对待。**先用假数据在隔离环境里跑**
+
+### 工具输出本身就是攻击面，即便工具可信
+
+GitHub README 那个例子就是这种情况。**应用于网页的输入扫描，也要应用于网络型工具的返回**。即便加延迟、不完美 —— **总比事后调查强**（被毒化的工具返回把 agent 引去外泄数据，日志只会显示一次"合法成功"的 API 调用）。
+
+Claude Code 和 Cowork 都让工具调用走代理：**代理执行网络和文件策略，并在返回进入模型 context 之前检查**。负责检查的分类器可以是个小快模型，不必动用主推理模型。
+
+---
+
+## 五、未来：盯着这几个方向
+
+⭐ **持久化 memory 中毒**：agent 跨 session 持久的 context 越来越多（product memory、CLAUDE.md、挂载的 workspace、定时长跑 agent 的状态目录）。**注入一旦落进任何一项，每次启动都会被重载**。session 启动时的好分类器会变得必备。
+
+⭐ **多 agent 信任级别滥用**：子 agent 可以隔离 untrusted 内容、只返结构化事实。但反过来 —— **如果子 agent 输出被当成比工具返回更高信任的"来自自己人"的来源，就引入新的注入向量**。
+
+⭐ **Agent 身份**：Cowork 的答案具体：凭据留宿主 keychain，VM 拿 per-session 范围化 token，token 可独立用户撤销。更大的问题是**跨平台 agent 身份** —— agent 该有自己的 principal，还是作为用户的延伸继承用户权限？最终可能是两者混合。
+
+---
+
+## 总结：三条原则
+
+1. ⭐ **环境层先做 containment，模型层再做行为引导**。教他们最多的两次事故 —— 员工被钓鱼 + 允许列表外泄 —— **都是 egress 经允许路径外泄，模型层根本兜不住**。**确定性 boundary 是概率性手段失效时的最后一道**
+
+2. ⭐ **隔离强度匹配用户的监督能力**。看得懂 bash 的开发者和看不懂的知识工作者，**不是同一个威胁模型**。给专家加过多摩擦、或给非专家过多信任，**两个方向错都是错**
+
+3. ⭐ **警惕自定义组件**。久经考验的 hypervisor、syscall 过滤器、容器运行时扛过的对抗，**远超你将要写的任何东西**。每个部署里，**标准基础设施都没翻车，自己写的"围绕基础设施的工作"是出问题的地方**
+
+Agent 是新软件类别，但**它们的系统级交互不是**。它们还是读文件、开 socket、起进程 —— 这意味着**用成熟工具做 containment 是关键且可行的防御**。AI 风险收益平衡会随能力变化，**但给爆炸半径加上硬上限往往把平衡往正确方向推**。

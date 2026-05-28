@@ -1,0 +1,240 @@
+---
+title: 多 agent 研究系统：从原型到生产的工程教训
+type: translation
+publishDate: 2025-06-13
+description: Claude 的 Research 功能背后是 orchestrator-worker 多 agent 架构。这篇讲为什么用多 agent、怎么 prompt 它们、eval 怎么搞、生产环境会撞什么坑。
+tags:
+  - AI
+  - Agent
+  - Multi-Agent
+  - 工程实践
+source:
+  title: How we built our multi-agent research system
+  url: https://www.anthropic.com/engineering/multi-agent-research-system
+  author: Anthropic
+  siteName: Anthropic Engineering
+  publishDate: 2025-06-13
+translator: Harlon Wang
+---
+
+> Claude 的 Research 功能能跨 web、Google Workspace、各种集成完成复杂任务。背后是 **orchestrator-worker 多 agent 架构** —— 主 agent 拆任务给 subagent 并行干。从原型到生产的过程教给 Anthropic 很多关于架构、工具、prompt engineering 的实战经验。
+
+## 一、为什么要用多 agent ⭐
+
+研究类任务**没法预先把路径写死** —— 研究本身就是路径依赖的，得边查边调整方向。这天然适合 agent。
+
+多 agent 的优势可以归结成几条：
+
+| 维度 | 单 agent 的局限 | 多 agent 的解法 |
+|---|---|---|
+| 路径不可预知 | 一条线性流程兜不住 | 主 agent 动态拆任务 |
+| Context 是稀缺资源 | 一个 context 装不下大量探索 | 每个 subagent 独占 context，**只回吐压缩后的关键 token** |
+| 关注点分离 | 工具/prompt 混在一起 | 子任务用不同 tool 集、不同 prompt |
+| 信息吞吐 | 串行慢 | 并行做调研 |
+
+**实测数据**：用 Claude Opus 4 当主 agent + Sonnet 4 当 subagent，比单 agent Opus 4 在内部 research eval 上**高 90.2%**。典型例子：列出 S&P 500 IT 公司的董事会成员 —— 单 agent 在串行搜索里就卡死了。
+
+更宏观的结论来自 BrowseComp 评测的方差分析：
+
+> **Token 用量本身就解释了 80% 的性能差异**（再加上调用次数和模型选择，三个因子合计解释 95%）
+
+也就是说，**多 agent 之所以有效，根本上是因为它把"能花的 token"这个上限抬高了**。
+
+### 代价
+
+- 多 agent 用的 token 是普通 chat 的 **15 倍**（单 agent 是 4 倍）
+- 经济上要求**任务本身价值够高，才值得这么烧**
+- 不适合需要 agent 之间共享 context 的任务（比如大部分编码任务）
+- LLM 现在还不擅长实时协作和动态委派
+
+**适合**：高并行 / 信息量超过单 context window / 需要复杂工具的研究类任务
+
+---
+
+## 二、架构概览
+
+orchestrator-worker 模式：
+
+```
+用户 query
+   ↓
+LeadResearcher（思考 + 存计划到 Memory）
+   ↓
+派生 Subagents（并行）
+   ↓                 ↓                ↓
+Subagent 1     Subagent 2      Subagent N
+（独立 context，迭代搜索 + interleaved thinking 评估）
+   ↓                 ↓                ↓
+返回压缩摘要给 LeadResearcher
+   ↓
+继续派子、或汇总
+   ↓
+CitationAgent 处理引用
+   ↓
+返回带引用的结果
+```
+
+跟传统 RAG 的关键区别：传统 RAG 是**静态检索**（按相似度抓一批 chunk），多 agent 是**多步动态搜索**，**会根据中间发现调整策略**。
+
+**为什么把 plan 写进 Memory**：context window 超 200k 会被截断，必须有外部持久化兜底。
+
+---
+
+## 三、Prompt engineering 八条经验 ⭐
+
+### 1. 像 agent 一样思考
+
+迭代 prompt 前你得知道它实际怎么跑。**搭一个用同样 prompt + 同样工具的模拟**，跟着 agent 一步步看。立刻就能看到失败模式：明明信息够了还在搜、查询太长、选错工具。
+
+**好的 prompt engineering 依赖对 agent 准确的心智模型**。
+
+### 2. 教 orchestrator 怎么委派
+
+主 agent 给 subagent 派活时，**必须明确**：
+
+- 目标
+- 输出格式
+- 用什么 tool 和数据源
+- 任务边界
+
+早期版本他们让主 agent 简单说一句「研究下半导体短缺」，结果三个 subagent 各干各的、严重重叠：一个查 2021 汽车芯片危机，另两个都在查 2025 当前供应链。
+
+### 3. 努力程度按任务复杂度走
+
+Agent 自己判断不出该花多大力气，**把规则写死在 prompt 里**：
+
+| 任务类型 | 建议 |
+|---|---|
+| 简单事实查询 | 1 个 agent，3-10 次工具调用 |
+| 直接对比 | 2-4 个 subagent，每个 10-15 次调用 |
+| 复杂研究 | 10+ 个 subagent，明确分工 |
+
+避免对简单 query 过度投入。
+
+### 4. 工具设计与选择至关重要
+
+**Agent-tool 接口跟 HCI 一样重要**。把 agent 派去 web 找只存在 Slack 里的信息 —— 一开始就注定失败。MCP 让这个问题指数级放大（一堆质量参差的第三方工具）。
+
+给 agent 写 **显式启发式**：
+
+- 先看所有可用工具再选
+- 让工具用法匹配用户意图
+- 广撒网走 web 搜，精细领域用专用工具
+- **专用工具优于通用工具**
+
+### 5. 让 agent 自己改进自己 ⭐
+
+Claude 4 模型是**很好的 prompt 工程师**。给它一段 prompt + 失败模式，它能诊断为什么挂、提改进建议。
+
+实战：他们做了个 **tool-testing agent**，喂它一个有问题的 MCP tool —— 它会去用、然后**重写工具描述**避开坑。测几十次之后，新描述能让后续 agent **完成任务的时间下降 40%**。
+
+### 6. 先广后窄
+
+像专家做调研一样：**先看全局，再钻细节**。Agent 默认就要写又长又具体的 query，**结果返回少**。**显式让它先短而宽 → 评估 → 渐进收窄**。
+
+### 7. 引导思考过程
+
+Extended thinking 可以当成**可控的 scratchpad**：
+
+- 主 agent 用 thinking 规划方法、估 query 复杂度、定 subagent 数量与角色
+- subagent 在 tool 返回后用 **interleaved thinking** 评估结果质量、找 gap、决定下一步 query
+
+测试显示 extended thinking 同时改善了 instruction-following、reasoning、效率。
+
+### 8. 并行工具调用是速度倍增器
+
+两层并行：
+
+1. 主 agent 一次起 3-5 个 subagent（不是串行）
+2. 每个 subagent 一次调 3+ 工具（不是串行）
+
+**复杂 query 的研究时间最高降 90%**，分钟级别完成几小时的活。
+
+---
+
+## 四、Eval：多 agent 评起来很特别
+
+**传统假设：相同输入 → 相同路径 → 相同输出**。多 agent 不是 —— **相同 query 可以走完全不同但都合理的路径**。所以**不能纯靠"是否按预设步骤走"评分，要看最终是否达成正确结果，过程是否合理**。
+
+### 立刻开搞，从小样本开始
+
+早期改动效果都很大（30% → 80% 不是稀奇事）。**20 个测试 query 就够看出变化**。
+
+> "等 100+ 测试集再做 eval"是常见的拖延借口。**别等，先 20 个起步**
+
+### LLM-as-judge
+
+研究输出是自由文本，靠 LLM 评分最实在。用 **rubric**：
+
+- 事实准确性
+- 引用准确性
+- 完整性
+- 源质量（一手 vs 二手）
+- 工具使用效率（合理次数？）
+
+实验下来，**一个 LLM、一个 prompt、输出 0.0-1.0 + pass/fail** 最稳，比多 judge 集成更对齐人类判断。
+
+### 人工 eval 抓自动化漏掉的
+
+人能发现 emergent 行为，比如：他们的 agent 早期**偏好 SEO 优化的内容农场**而不是高质量但排名低的学术 PDF / 个人博客。这种偏见自动化 eval 根本捕捉不到。
+
+**即便有完善的自动化 eval，人工测试不能省**。
+
+---
+
+## 五、生产环境的几个挑战 ⭐
+
+### Agent 是 stateful 的，错误会复利累积
+
+Agent 跑很久、跨大量 tool 调用累积状态。**出错不能从头重启**（贵且体验差）。他们的做法：
+
+- **可恢复执行**：能从故障点继续
+- **让模型自己处理**：告诉它"工具失败了"，它能优雅适应
+- **加上确定性兜底**：重试逻辑 + 定期 checkpoint
+
+### Debug 需要新姿势
+
+Agent 决策是动态、非确定性的 —— 同 prompt 两次跑不一样。Debug 难度上升。
+
+用户反映「agent 找不到明显信息」，团队**看不见为什么**：query 写错了？源选错了？工具失败？
+
+加上**完整生产 tracing**（监控 agent 决策模式与交互结构，**不监控对话内容**保护隐私），才能系统化诊断根因。
+
+### 部署需要协调
+
+Agent 系统是**高度 stateful 的 prompt + tool + 执行逻辑网**，几乎不停在跑。部署更新时 agent 可能处于任何状态。**不能一次性切版本**。
+
+他们用 **rainbow deployment**：新旧版本同时在线，流量渐进切换，**不打扰运行中的 agent**。
+
+### 同步执行有瓶颈
+
+目前主 agent 等所有 subagent 完成才继续。**协调简单但有瓶颈**：
+
+- 主 agent 没法在过程中 steer subagent
+- subagent 之间没法协调
+- 一个慢的 subagent 卡住所有人
+
+**异步执行**是方向，但带来结果协调、状态一致性、错误传播的新难题。
+
+---
+
+## 总结：直觉
+
+**Agent 系统的"最后一公里"是大部分路程**。dev 机器上能跑的代码 vs 可靠生产系统之间的工程差，远超预期。错误的复利让小问题变成致命问题 —— 一步走错，agent 可能完全偏离轨道。
+
+但多 agent 在开放性研究任务上**确实有价值**。用户反馈包括：找到没注意到的商业机会、梳理复杂医疗选项、解决棘手 bug、节省几天的工作。
+
+**关键工程要素**：
+
+⭐ 细致的 prompt 与工具设计（**不是死规则，而是协作框架** —— 定分工、定方法、定预算）
+⭐ 可观察性（看决策模式 + 交互结构）
+⭐ 紧密反馈循环（小 eval 立刻跑、人工兜底）
+⭐ 状态可恢复 + rainbow 部署
+
+---
+
+## 附：几个补充
+
+- **End-state eval**：变动状态的 agent，**判断最终状态对不对**，别一步步对路径
+- **超长对话**：让 agent 在阶段间总结 + 写入外部 memory；context 接近上限时**派 subagent 用干净 context 接力**，靠交接保持连续
+- **Subagent 直接写文件而不是回吐**：复杂结构化输出（代码、报告、可视化）让 subagent 写到外部存储，**只把 reference 返给主 agent**，避免"传话游戏"丢失信息

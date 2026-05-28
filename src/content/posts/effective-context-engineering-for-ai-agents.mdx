@@ -1,0 +1,165 @@
+---
+title: 为 AI agent 做上下文工程
+type: translation
+publishDate: 2025-09-29
+description: Context engineering 是 prompt engineering 的演进 —— 因为 context 是 agent 的有限资源，LLM 也有「注意力预算」，怎么省着用是核心。
+tags:
+  - AI
+  - Agent
+  - Context Engineering
+  - Claude Code
+source:
+  title: Effective context engineering for AI agents
+  url: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
+  author: Anthropic
+  siteName: Anthropic Engineering
+  publishDate: 2025-09-29
+translator: Harlon Wang
+---
+
+> Prompt engineering 解的是「怎么写 prompt」；context engineering 解的是「agent 跑起来后，整个上下文窗口里塞什么、留什么、扔什么」。后者是前者的自然演进 —— **因为 context 是 agent 的有限资源，LLM 也有「注意力预算」**。
+
+## 一、Context engineering 与 prompt engineering
+
+| 维度 | Prompt engineering | Context engineering |
+|---|---|---|
+| 关注点 | 写好 prompt 文字 | 管理 LLM 推理时**整个** context 状态 |
+| 任务性质 | 单次指令优化 | 持续的 token 取舍 |
+| 范围 | system prompt | 系统指令 + tools + MCP + 外部数据 + 消息历史 + …… |
+| 时态 | 一次性 | 每个 turn 都要重新决策 |
+
+一句话：**prompt engineering 是子集，context engineering 是全集**。
+
+为什么这件事变重要？Agent 在循环里跑得越久，可能塞进 context 的信息就越多。**取舍**这件事变成主活。
+
+---
+
+## 二、为什么 context 是稀缺资源 ⭐
+
+**Context rot**：context 越长，模型从中精确召回信息的能力越差。所有模型都有这个现象，只是衰减曲线陡缓不同。
+
+底层原因两条：
+
+1. **Transformer 架构**：n 个 token 产生 n² 对注意力关系。context 越长，这些 pairwise 关系就被「摊薄」
+2. **训练数据分布**：训练时短序列远多于长序列，模型对超长跨度依赖见得少
+
+结论：**把 context 当成有限资源，每多一个 token 都要审一审**。LLM 有「注意力预算」，跟人类的工作记忆一样有上限。
+
+---
+
+## 三、上下文里到底放什么
+
+核心原则：**用最少的高信号 token 撬动期望行为**。
+
+### System prompt：找对「海拔」
+
+两种典型翻车：
+
+| 翻车类型 | 长啥样 |
+|---|---|
+| **太死板** | if-else 硬编码每一种边界情况，prompt 脆而难维护 |
+| **太空洞** | 「请帮我把工作做好」之类的，模型抓不到具体抓手 |
+
+好的 system prompt 在两者之间：**具体到能指导行为，灵活到不限死**。
+
+实践建议：
+
+- 用 `<background_information>`、`## Tool guidance`、`## Output description` 这样分节，XML 标签或 Markdown 标题都行（模型越强，格式细节越无所谓）
+- 先用最强模型 + 最 minimal prompt 测一下，看哪些情况翻车，再针对性补
+- **minimal ≠ 短**，是「正好够」
+
+### Tools：让 agent 走得动
+
+工具是 agent 跟外界的契约。两条铁律：
+
+1. **token 高效**：返回的信息要紧凑，不要冗长
+2. **自描述清晰**：用途、参数名、与其他工具的功能边界
+
+最常见的翻车：**工具集臃肿 + 功能重叠**。**如果一个工程师都说不清某情景下该用 A 还是 B 工具，AI 就更不可能选对**。
+
+> 详见同系列 [Writing tools for AI agents](https://www.anthropic.com/engineering/writing-tools-for-agents)
+
+### Few-shot 示例：精挑代替穷举
+
+不要在 prompt 里堆每一种边界情况。**挑几个有代表性、多样化、规范的示例**，让模型从中归纳行为模式。
+
+> 对 LLM 来说，**示例是它的"图片"**，比一千字描述强
+
+---
+
+## 四、运行时检索：从 pre-load 到 just-in-time
+
+过去的范式：用 embedding-based 检索，把可能相关的 context **预先塞进** prompt。
+
+新范式：**「just in time」** —— agent 维护轻量级标识符（文件路径、查询、URL），**运行时再用工具按需把数据加载进 context**。
+
+**Claude Code 的真实做法**：
+
+- 不把整库代码一开始就塞进 context
+- 模型用 `glob`、`grep`、`head`、`tail` 这种命令探索
+- 类比人类：我们不背所有信息，靠文件系统、收藏夹这样的**外部索引按需取**
+
+**额外好处**是渐进式发现 —— 文件大小暗示复杂度、命名暗示意图、时间戳暗示相关性。**agent 一层层搭起认知，工作记忆里只留必要的**。
+
+代价：运行时探索比预检索慢，且需要工程师把工具和探索启发式设计好，否则 agent 会**乱走、卡死路**。
+
+实操里**混合策略**最常见。Claude Code 把 `CLAUDE.md` 预加载进 context，代码搜索靠 `glob`/`grep` 运行时拉取 —— 绕开了陈旧索引和复杂语法树的问题。
+
+> 模型越聪明，越要让它"自己来"，**少加人工 curation**
+
+---
+
+## 五、长跨度任务：context 装不下怎么办 ⭐
+
+跨度几十分钟到几小时的任务（大型代码迁移、综合研究），token 量肯定超 context 窗口。三种核心技术：
+
+### 1. Compaction（压缩）
+
+当上下文接近上限，**汇总当前对话内容**，开一个新 context 用汇总继续。
+
+**Claude Code 怎么做**：把消息历史给模型让它压缩，**保留** 架构决策、未解 bug、实现细节；**丢弃** 冗余的 tool 输出和闲聊。然后 agent 用「压缩摘要 + 最近访问的 5 个文件」继续往下走。
+
+**这是个艺术活**：留什么、扔什么。**过度压缩** 会丢看似无关、其实关键的细节。建议：
+
+1. **先冲 recall**（确保所有相关信息都被压缩 prompt 抓到）
+2. **再调 precision**（剔除冗余）
+
+最安全的轻度压缩：**清掉早期的 tool 调用结果**。Claude Developer Platform 已经把这个做成功能上线了。
+
+### 2. Structured note-taking（结构化记笔记）
+
+Agent 定期把笔记写到 context 之外的持久存储，需要时再读回来。
+
+像 Claude Code 维护 todo 列表，或自定义 agent 维护一个 `NOTES.md`。**简单但极其有效**。
+
+**Pokemon 那个例子**：Claude 玩 Pokemon 时自动记录「过去 1234 步在 Route 1 训练，皮卡丘升了 8 级，目标 10 级」、绘制探索地图、记关键成就。**几小时游戏里保持目标连贯**，这是单纯靠 context window 做不到的。
+
+Claude Developer Platform 在 Sonnet 4.5 发布时开了 memory tool，文件式存储外部信息，agent 可以跨 session 持续累积知识库。
+
+### 3. Sub-agent architectures（子 agent）
+
+**不是一个 agent 扛全程，而是开多个清空 context 的子 agent 干专项**。主 agent 出高层规划，子 agent 干深度技术活或工具调用，**只返回 1000-2000 token 的提炼摘要**。
+
+主 agent 不被细节淹没，**关注点分离**。
+
+> 详见同系列 [How we built our multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system)
+
+### 三种怎么选？
+
+| 任务特征 | 推荐 |
+|---|---|
+| 长对话、需要反复打磨 | Compaction |
+| 迭代开发，里程碑清晰 | Note-taking |
+| 复杂研究/分析，并行探索有价值 | Multi-agent |
+
+---
+
+## 总结：直觉
+
+Context engineering 是 LLM 应用搭建方式的一次范式转移。模型越强，挑战越不是「写出完美 prompt」，而是**每一步都要想清楚：什么进 context、什么不进**。
+
+- **永远的指南针**：找最少的高信号 token，撬动最想要的结果
+- **把 context 当稀缺资源**：每个 token 都消耗注意力预算
+- **模型越强、越要让它自己来**：少塞、按需取
+
+LLM 应用搭建的范式还在变 —— 但「context 是有限的，要省着用」这条原则，长期不会过时。
