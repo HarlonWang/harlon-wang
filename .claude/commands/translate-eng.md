@@ -46,5 +46,4 @@ argument-hint: <原文 URL>
 ## 禁止
 
 - 不要 `git commit`（由我手动决定）
-- 不要把 `draft` 改成 `false`（由我手动决定发布时机）
 - 不要新建 README 或额外说明文档
