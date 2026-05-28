@@ -56,7 +56,6 @@ const products = defineCollection({
         website: z.string().url().nullable().optional(),
       })
       .default({}),
-    stars: z.number().optional(),
     featured: z.boolean().default(false),
   }),
 });

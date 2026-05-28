@@ -12,8 +12,7 @@ const byCategory = (cat: 'product' | 'library' | 'tool') =>
       const ra = archivedRank(a.data.status);
       const rb = archivedRank(b.data.status);
       if (ra !== rb) return ra - rb;
-      if (b.data.year !== a.data.year) return b.data.year - a.data.year;
-      return (b.data.stars ?? 0) - (a.data.stars ?? 0);
+      return b.data.year - a.data.year;
     });
 
 const primaryLink = (p: CollectionEntry<'products'>) =>
@@ -63,10 +62,6 @@ const groups: { title: string; intro: string; items: CollectionEntry<'products'>
                       </span>
                     )}
                   </h3>
-                  <p class="product-card-meta">
-                    {p.data.year}
-                    {p.data.stars !== undefined && ` · ⭐ ${p.data.stars}`}
-                  </p>
                   <p class="product-card-desc">{p.data.description_zh}</p>
                 </article>
               ))}
