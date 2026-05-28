@@ -3,7 +3,7 @@ import BaseLayout from '@/layouts/BaseLayout.astro';
 import { getCollection } from 'astro:content';
 import { getPostBadge } from '@/utils/post-badge';
 
-const latestPosts = (await getCollection('posts', ({ data }) => !data.draft))
+const latestPosts = (await getCollection('posts'))
   .sort((a, b) => b.data.publishDate.valueOf() - a.data.publishDate.valueOf())
   .slice(0, 3);
 

@@ -17,7 +17,6 @@ argument-hint: <原文 URL>
     - `publishDate`: 今天日期（YYYY-MM-DD）
     - `description`: 一句话点题，中文
     - `tags`: 主题归纳，中文 + 必要英文术语
-    - `draft: true`
     - `source.title`: 原文英文标题
     - `source.url`: $ARGUMENTS
     - `source.author`: Anthropic
