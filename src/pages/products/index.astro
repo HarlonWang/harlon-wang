@@ -1,56 +1,83 @@
 ---
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import { getCollection } from 'astro:content';
+import type { CollectionEntry } from 'astro:content';
 
-const products = (await getCollection('products')).sort(
-  (a, b) => b.data.year - a.data.year
-);
+const all = await getCollection('products');
+const byCategory = (cat: 'product' | 'library' | 'tool') =>
+  all
+    .filter((p) => p.data.category === cat)
+    .sort((a, b) => {
+      const archivedRank = (s: string) => (s === 'archived' ? 1 : 0);
+      const ra = archivedRank(a.data.status);
+      const rb = archivedRank(b.data.status);
+      if (ra !== rb) return ra - rb;
+      if (b.data.year !== a.data.year) return b.data.year - a.data.year;
+      return (b.data.stars ?? 0) - (a.data.stars ?? 0);
+    });
+
+const primaryLink = (p: CollectionEntry<'products'>) =>
+  p.data.links?.website ?? p.data.links?.github ?? '#';
+
+const groups: { title: string; intro: string; items: CollectionEntry<'products'>[] }[] = [
+  {
+    title: '产品',
+    intro: '端到端的成品，自己在用，也希望对别人有用。',
+    items: byCategory('product'),
+  },
+  {
+    title: '开源库',
+    intro: '给开发者用的库与插件，长期维护或曾经长期维护。',
+    items: byCategory('library'),
+  },
+  {
+    title: '工具与小品',
+    intro: '解决一个具体小问题的脚手架、SDK 或桌面小工具。',
+    items: byCategory('tool'),
+  },
+];
 ---
 
-<BaseLayout title="作品" description="作品集 — 个人项目与开源库">
+<BaseLayout title="作品" description="作品集 — 产品与开源库">
   <h1>作品</h1>
-  <p class="post-meta">作品集，按 year 倒序</p>
-  <section>
-    {
-      products.map((p) => (
-        <article class="product-card">
-          <h3 class="product-card-title">
-            <a href={`/products/${p.id}/`}>{p.data.name}</a>
-            {p.data.status === 'archived' && (
-              <span style="color: var(--color-muted); font-weight: normal; font-size: 0.9em;">
-                {' '}
-                · archived
-              </span>
-            )}
-          </h3>
-          <p class="product-card-meta">
-            {p.data.year}
-            {p.data.stars !== undefined && ` · ⭐ ${p.data.stars}`}
-          </p>
-          <p class="product-card-desc">{p.data.description_zh}</p>
-          <p class="product-card-links">
-            {p.data.links?.github && (
-              <a href={p.data.links.github} target="_blank" rel="noopener">
-                GitHub
-              </a>
-            )}
-            {p.data.links?.website && (
-              <a href={p.data.links.website} target="_blank" rel="noopener">
-                Website
-              </a>
-            )}
-            {p.data.links?.app && (
-              <a href={p.data.links.app} target="_blank" rel="noopener">
-                App
-              </a>
-            )}
-          </p>
-        </article>
-      ))
-    }
-  </section>
+  <p class="post-meta">从 GitHub 里挑出来的，按"产品 / 开源库"分组。</p>
+
   {
-    products.length === 0 && (
+    groups.map(
+      (g) =>
+        g.items.length > 0 && (
+          <>
+            <h2 class="section-title">{g.title}</h2>
+            <p class="post-meta" style="margin-top: -0.3em;">{g.intro}</p>
+            <section>
+              {g.items.map((p) => (
+                <article class="product-card">
+                  <h3 class="product-card-title">
+                    <a href={primaryLink(p)} target="_blank" rel="noopener">
+                      {p.data.name}
+                    </a>
+                    {p.data.status === 'archived' && (
+                      <span style="color: var(--color-muted); font-weight: normal; font-size: 0.9em;">
+                        {' '}
+                        · archived
+                      </span>
+                    )}
+                  </h3>
+                  <p class="product-card-meta">
+                    {p.data.year}
+                    {p.data.stars !== undefined && ` · ⭐ ${p.data.stars}`}
+                  </p>
+                  <p class="product-card-desc">{p.data.description_zh}</p>
+                </article>
+              ))}
+            </section>
+          </>
+        )
+    )
+  }
+
+  {
+    all.length === 0 && (
       <p style="color: var(--color-muted); margin-top: 2em;">
         还没有作品被记录在这里。
       </p>

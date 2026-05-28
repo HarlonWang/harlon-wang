@@ -43,14 +43,17 @@ const featuredProducts = (await getCollection('products', ({ data }) => data.fea
       <>
         <h2 class="section-title">精选作品</h2>
         <ul style="list-style:none;padding:0;">
-          {featuredProducts.map((p) => (
-            <li style="margin: 0.5em 0;">
-              <strong>{p.data.name}</strong>
-              <span style="color: var(--color-muted); margin-left: 0.5em;">
-                — {p.data.description_zh}
-              </span>
-            </li>
-          ))}
+          {featuredProducts.map((p) => {
+            const href = p.data.links?.website ?? p.data.links?.github ?? '#';
+            return (
+              <li style="margin: 0.5em 0;">
+                <a href={href} target="_blank" rel="noopener"><strong>{p.data.name}</strong></a>
+                <span style="color: var(--color-muted); margin-left: 0.5em;">
+                  — {p.data.description_zh}
+                </span>
+              </li>
+            );
+          })}
         </ul>
         <p>
           <a href="/products">查看全部作品 →</a>

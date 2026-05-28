@@ -45,6 +45,7 @@ const products = defineCollection({
   loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/products' }),
   schema: z.object({
     name: z.string(),
+    category: z.enum(['product', 'library', 'tool']),
     status: z.enum(['active', 'archived']).default('active'),
     year: z.number(),
     description_zh: z.string(),
@@ -53,7 +54,6 @@ const products = defineCollection({
       .object({
         github: z.string().url().nullable().optional(),
         website: z.string().url().nullable().optional(),
-        app: z.string().url().nullable().optional(),
       })
       .default({}),
     stars: z.number().optional(),
