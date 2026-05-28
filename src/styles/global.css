@@ -241,9 +241,11 @@ li {
   font-size: 0.95em;
   margin: 0;
 }
-.post-card-badge {
+.post-badge {
   display: inline-block;
   margin-right: 0.4em;
+  color: var(--color-muted);
+  font-weight: 400;
 }
 
 /* ============ Product card ============ */

@@ -1,5 +1,6 @@
 ---
 import type { CollectionEntry } from 'astro:content';
+import { getPostBadge } from '@/utils/post-badge';
 
 interface Props {
   entry: CollectionEntry<'posts'>;
@@ -8,26 +9,15 @@ interface Props {
 const { entry } = Astro.props;
 const { data } = entry;
 const dateText = data.publishDate.toISOString().slice(0, 10);
-
-const badgeMap = {
-  translation: '🌐 译',
-  'ai-led': '🤖 AI 写',
-  'co-authored': '🤝 协作',
-  'human-led': '✍️ 我写',
-} as const;
-
-const badge =
-  data.type === 'translation'
-    ? badgeMap.translation
-    : badgeMap[data.authorship ?? 'human-led'];
+const badge = getPostBadge(entry);
 ---
 
 <article class="post-card">
   <h3 class="post-card-title">
+    <span class="post-badge">{badge}</span>
     <a href={`/posts/${entry.id}/`}>{data.title}</a>
   </h3>
   <p class="post-card-meta">
-    <span class="post-card-badge">{badge}</span>
     <time datetime={dateText}>{dateText}</time>
     {
       data.type === 'translation' && data.source && (

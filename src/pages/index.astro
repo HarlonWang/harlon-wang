@@ -1,6 +1,7 @@
 ---
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import { getCollection } from 'astro:content';
+import { getPostBadge } from '@/utils/post-badge';
 
 const latestPosts = (await getCollection('posts', ({ data }) => !data.draft))
   .sort((a, b) => b.data.publishDate.valueOf() - a.data.publishDate.valueOf())
@@ -24,6 +25,7 @@ const featuredProducts = (await getCollection('products', ({ data }) => data.fea
         <ul style="list-style:none;padding:0;">
           {latestPosts.map((p) => (
             <li style="margin: 0.5em 0;">
+              <span class="post-badge">{getPostBadge(p)}</span>
               <a href={`/posts/${p.id}/`}>{p.data.title}</a>
               <span style="color: var(--color-muted); margin-left: 0.5em; font-size: 0.9em;">
                 {p.data.publishDate.toISOString().slice(0, 10)}
