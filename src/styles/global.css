@@ -34,6 +34,7 @@ html {
   font-family: var(--font-sans);
   line-height: var(--line-height);
   -webkit-font-smoothing: antialiased;
+  scrollbar-gutter: stable;
 }
 body {
   margin: 0;
