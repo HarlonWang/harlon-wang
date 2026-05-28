@@ -26,8 +26,10 @@
     },
     "https://www.anthropic.com/engineering/building-effective-agents": {
         "lastmod": "2026-04-13T17:46:47.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "building-effective-agents",
+        "translatedAt": "2026-05-28"
     },
     "https://www.anthropic.com/engineering/claude-code-auto-mode": {
         "lastmod": "2026-05-27T11:44:48.000Z",
