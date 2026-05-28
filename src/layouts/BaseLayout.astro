@@ -12,9 +12,9 @@ interface Props {
 
 const { title, description, ogImage, noIndex = false } = Astro.props;
 const canonical = new URL(Astro.url.pathname, Astro.site);
-const defaultDescription = 'Harlon Wang (王海龙) 的个人网站 — 文章、产品、关于';
+const defaultDescription = 'Harlon Wang 的个人网站 — 文章、产品、关于';
 const desc = description ?? defaultDescription;
-const fullTitle = title === 'harlon.wang' ? title : `${title} · harlon.wang`;
+const fullTitle = title === 'Harlon Wang' ? title : `${title} · Harlon Wang`;
 ---
 
 <!doctype html>

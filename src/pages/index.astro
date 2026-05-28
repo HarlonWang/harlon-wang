@@ -10,13 +10,11 @@ const featuredProducts = (await getCollection('products', ({ data }) => data.fea
   .sort((a, b) => b.data.year - a.data.year);
 ---
 
-<BaseLayout title="harlon.wang" description="王海龙 (Harlon Wang) 的个人网站 — 文章、产品、关于">
+<BaseLayout title="Harlon Wang" description="Harlon Wang 的个人网站 — 文章、产品、关于">
   <section class="hero">
-    <h1>王海龙 / Harlon Wang</h1>
-    <p class="hero-tagline">Android 架构师 · Kotlin Multiplatform · 杭州</p>
-    <p style="color: var(--color-muted); font-style: italic;">
-      （这部分还在打磨中）
-    </p>
+    <h1>Harlon Wang</h1>
+    <p class="hero-tagline">写代码、做开源、写文章。</p>
+    <p class="hero-tagline">专注 Android、Kotlin Multiplatform 与 AI 工具。</p>
   </section>
 
   {
