@@ -1,0 +1,36 @@
+name: Check Anthropic Engineering articles
+
+on:
+    schedule:
+        # 每月 1 号 00:00 UTC（北京时间 08:00）
+        - cron: '0 0 1 * *'
+    workflow_dispatch:
+
+permissions:
+    contents: write
+    issues: write
+
+jobs:
+    check:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+
+            - name: Run discovery script
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: node scripts/check-engineering.mjs
+
+            - name: Commit seen.json updates
+              run: |
+                  if [[ -n "$(git status --porcelain .translation-queue/seen.json)" ]]; then
+                      git config user.name 'github-actions[bot]'
+                      git config user.email 'github-actions[bot]@users.noreply.github.com'
+                      git add .translation-queue/seen.json
+                      git commit -m "chore: 更新 Anthropic Engineering 文章发现状态"
+                      git push
+                  fi
