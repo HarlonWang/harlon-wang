@@ -1,0 +1,93 @@
+---
+title: Desktop Extensions：把 MCP 服务器安装做成一键
+type: translation
+publishDate: 2026-05-29
+description: MCP 很强，但装一个 MCP 服务器一直很折腾：装运行时、克隆代码、装依赖、手改 JSON 配置。Desktop Extensions 用一个 .dxt 文件把这一切打包，下载、打开、搞定。
+tags:
+  - AI
+  - MCP
+  - Claude Desktop
+  - 工具
+source:
+  title: "Desktop Extensions: One-click MCP for Claude Desktop"
+  url: https://www.anthropic.com/engineering/desktop-extensions
+  author: Anthropic
+  siteName: Anthropic Engineering
+  publishDate: 2025-09-12
+translator: Harlon Wang
+---
+
+> **MCP（Model Context Protocol，模型上下文协议）** 给 AI 应用提供了一种连接外部工具和数据源的标准方式。它很强——但到今天为止，**装一个 MCP 服务器一点都不简单**。
+
+Desktop Extensions 是我们的答案：一种打包格式，把 MCP 服务器的安装变成**一键**。
+
+---
+
+## 安装这件事到底难在哪
+
+在今天之前，想给 Claude Desktop 加一个 MCP 服务器，路径大概长这样：
+
+1. 先确保装了对的运行时（Node.js、Python 等）
+2. 克隆或下载服务器的代码
+3. 装它的依赖
+4. 手改一个 JSON 配置文件，把路径和参数**一字不差**地填对
+5. 重启 app，然后祈祷它能跑起来
+
+**上面每一步都是个能卡住的地方。** 缺个运行时、错个路径、JSON 里打错一个字——任何一个，都会让你得到一个「静默加载失败」的服务器。对开发者这是个麻烦，对其他所有人这是一堵墙。
+
+---
+
+## 一个 Desktop Extension 是什么
+
+一个 Desktop Extension 就是**单个文件**——一个 `.dxt` 归档——它把 MCP 服务器运行所需的一切都捆在一起：
+
+- 服务器代码本身
+- 它的全部依赖，打包在内
+- 一个 **manifest（清单）文件**，描述这个服务器、它的配置和它的要求
+
+因为依赖是**跟着扩展一起走的**，所以没有单独的安装步骤。你下载一个 `.dxt` 文件，打开它，剩下的 Claude Desktop 全包了。
+
+---
+
+## manifest 清单
+
+每个扩展的核心是一个 `manifest.json`，它把宿主应用需要知道的一切都声明出来：
+
+| 声明项 | 内容 |
+|---|---|
+| 元数据 | 名称、版本、作者、描述 |
+| 入口 | 服务器的入口点，以及怎么运行它 |
+| 用户配置 | 可配置项，带类型和默认值 |
+| 兼容性 | 支持哪些平台、哪些 app 版本 |
+
+有了 manifest，宿主就能**给配置呈现一个像样的 UI**，而不是让用户去编辑生的 JSON。如果某个服务器需要 API key，manifest 把它声明出来，app 就显示一个正经的输入框。
+
+---
+
+## 内置运行时
+
+安装失败的一大来源是**运行时要求**——服务器需要 Node，可用户没装、或者版本不对。
+
+Claude Desktop **自带了一个内置的 Node.js 运行时**，扩展可以直接用。于是一个基于 Node 的 MCP 服务器，**在一台从没装过 Node 的机器上也能开箱即跑**。
+
+---
+
+## 用操作系统钥匙串安全地存配置
+
+API key 这类敏感设置，不该躺在一个明文配置文件里。Desktop Extensions 把敏感值存进**操作系统的钥匙串**（macOS 上是 Keychain、Windows 上是 Credential Manager），让密钥待在「有 OS 保护」的地方，而不是磁盘上的一个文件里。
+
+---
+
+## 对所有人开放
+
+我们把 `.dxt` 规范和构建扩展的工具链都**开源**了。这个格式**不绑定 Claude Desktop**——任何托管 MCP 服务器的应用都能采用它。我们的期望是：有了一个统一、共享的打包格式，开发者**只造一次扩展，就能在每个兼容 MCP 的 app 上跑**。
+
+为了帮开发者上手，我们做了工具：用**一条命令**就能把一个现成的 MCP 服务器打包成 `.dxt` 文件，依赖捆绑和 manifest 脚手架生成都帮你搞定。
+
+---
+
+## 总结：为什么这事重要
+
+MCP 的承诺，是**一个可互操作的工具生态**，任何 AI 应用都能从中取用。但**一个生态只有在安装无摩擦时才会繁荣**。
+
+把一套多步、易错的配置流程**压缩成一键**——再把格式开放给所有人用——Desktop Extensions 想做的，就是让这个生态对**每一个人**都触手可及，而不只是对那些「乐意编辑 JSON 配置」的开发者。

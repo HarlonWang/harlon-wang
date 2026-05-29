@@ -35,8 +35,10 @@
     },
     "https://www.anthropic.com/engineering/claude-code-auto-mode": {
         "lastmod": "2026-05-27T11:44:48.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "claude-code-auto-mode",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/claude-code-best-practices": {
         "lastmod": "2026-01-26T23:24:56.000Z",
@@ -47,8 +49,10 @@
     },
     "https://www.anthropic.com/engineering/claude-code-sandboxing": {
         "lastmod": "2025-11-03T21:01:45.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "claude-code-sandboxing",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/claude-think-tool": {
         "lastmod": "2025-12-15T18:02:25.000Z",
@@ -76,8 +80,10 @@
     },
     "https://www.anthropic.com/engineering/desktop-extensions": {
         "lastmod": "2025-09-12T00:43:28.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "desktop-extensions",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents": {
         "lastmod": "2026-01-06T15:31:12.000Z",
@@ -107,8 +113,10 @@
     },
     "https://www.anthropic.com/engineering/harness-design-long-running-apps": {
         "lastmod": "2026-03-24T16:23:08.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "harness-design-long-running-apps",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/how-we-contain-claude": {
         "lastmod": "2026-05-28T10:01:59.000Z",
@@ -124,8 +132,10 @@
     },
     "https://www.anthropic.com/engineering/managed-agents": {
         "lastmod": "2026-04-24T14:19:43.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "managed-agents",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/multi-agent-research-system": {
         "lastmod": "2026-01-06T15:09:32.000Z",

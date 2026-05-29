@@ -6,16 +6,6 @@
 
 ## 待翻译
 
-- equipping-agents-for-the-real-world-with-agent-skills
-- code-execution-with-mcp
-- effective-harnesses-for-long-running-agents
-- harness-design-long-running-apps
-- claude-code-auto-mode
-- claude-code-sandboxing
-- advanced-tool-use
-- claude-think-tool
-- desktop-extensions
-- managed-agents
 - demystifying-evals-for-ai-agents
 - AI-resistant-technical-evaluations
 - contextual-retrieval
