@@ -10,16 +10,48 @@ const posts = (await getCollection('posts')).sort(
 
 <BaseLayout title="文章" description="文章 — 翻译与原创">
   <h1>文章</h1>
-  <p class="post-meta" style="margin-bottom: 0.3em;">文章 {posts.length} 篇</p>
-  <p class="post-legend">
-    标签：🌐 译（翻译稿）· 🤖 AI 写（主笔）· 🤝 协作（五五开）· ✍️ 我写（主笔）
-  </p>
-  <section>
+  <div class="post-filter" role="group" aria-label="按类型筛选文章">
+    <button type="button" class="post-filter-btn is-active" data-filter="all" aria-pressed="true">全部</button>
+    <button type="button" class="post-filter-btn" data-filter="translation" aria-pressed="false">🌐 译（翻译稿）</button>
+    <button type="button" class="post-filter-btn" data-filter="ai-led" aria-pressed="false">🤖 AI 写（主笔）</button>
+    <button type="button" class="post-filter-btn" data-filter="co-authored" aria-pressed="false">🤝 协作（五五开）</button>
+    <button type="button" class="post-filter-btn" data-filter="human-led" aria-pressed="false">✍️ 我写（主笔）</button>
+  </div>
+  <section id="post-list">
     {posts.map((p) => <PostCard entry={p} />)}
   </section>
+  <p id="post-empty" class="post-empty" hidden>该类型下还没有文章。</p>
+
   {
     posts.length === 0 && (
       <p style="color: var(--color-muted); margin-top: 2em;">还没有文章。</p>
     )
   }
 </BaseLayout>
+
+<script>
+  const buttons = document.querySelectorAll<HTMLButtonElement>('.post-filter-btn');
+  const cards = document.querySelectorAll<HTMLElement>('#post-list .post-card');
+  const empty = document.getElementById('post-empty');
+
+  function applyFilter(filter: string) {
+    let visible = 0;
+    cards.forEach((card) => {
+      const match = filter === 'all' || card.dataset.category === filter;
+      card.hidden = !match;
+      if (match) visible++;
+    });
+    if (empty) empty.hidden = visible !== 0;
+  }
+
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      buttons.forEach((b) => {
+        const active = b === btn;
+        b.classList.toggle('is-active', active);
+        b.setAttribute('aria-pressed', String(active));
+      });
+      applyFilter(btn.dataset.filter ?? 'all');
+    });
+  });
+</script>

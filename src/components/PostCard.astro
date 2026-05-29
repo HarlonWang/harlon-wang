@@ -10,9 +10,11 @@ const { entry } = Astro.props;
 const { data } = entry;
 const dateText = data.publishDate.toISOString().slice(0, 10);
 const badge = getPostBadge(entry);
+const category =
+  data.type === 'translation' ? 'translation' : data.authorship ?? 'human-led';
 ---
 
-<article class="post-card">
+<article class="post-card" data-category={category}>
   <h3 class="post-card-title">
     <span class="post-badge">{badge}</span>
     <a href={`/posts/${entry.id}/`}>{data.title}</a>
