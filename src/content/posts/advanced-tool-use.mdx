@@ -1,0 +1,279 @@
+---
+title: 进阶工具使用：让 agent 用得起成千上万个工具
+type: translation
+publishDate: 2026-05-29
+description: 当 agent 要在成百上千个工具间工作，瓶颈就成了「怎么用得起」。工具搜索、编程式调用、工具示例三个功能，分别从「找工具、用工具、调对工具」三处破局。
+tags:
+  - AI
+  - Agent
+  - Tool use
+  - MCP
+  - Context
+source:
+  title: Introducing advanced tool use on the Claude Developer Platform
+  url: https://www.anthropic.com/engineering/advanced-tool-use
+  author: Anthropic
+  siteName: Anthropic Engineering
+  publishDate: 2025-11-20
+translator: Harlon Wang
+---
+
+> AI agent 的未来，是模型能在成百上千个工具之间游刃有余地工作。但要做到这点，agent 不能把每个工具定义都一股脑塞进 context（上下文）。这篇介绍三个新功能：**工具搜索（Tool Search Tool）**、**编程式工具调用（Programmatic Tool Calling）**、**工具使用示例（Tool Use Examples）**，分别解决「找工具、用工具、调对工具」三类瓶颈。
+
+设想这样两种 agent：一个 IDE 助手，集成了 git 操作、文件处理、包管理、测试框架和部署流水线；一个运维协调员，同时连着 Slack、GitHub、Google Drive、Jira、公司数据库和几十个 MCP server。要让这种 agent 真正好用，得满足几个条件：
+
+- **能用上几乎无限的工具库**，却不必把每个定义都前置塞进 context。我们之前在[用代码执行调用 MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) 那篇里讲过，工具定义和结果有时在 agent 读到请求之前就吃掉 50,000+ token。agent 应该**按需发现并加载**工具，只留下当前任务相关的那些。
+- **能从代码里调用工具**。用自然语言一个个调工具，每次调用都要走一遍完整推理，中间结果不管有用没用都堆进 context。而代码天生适合写编排逻辑——循环、条件、数据变换。
+- **能从示例里学会正确用法**，而不只靠 schema 定义。JSON schema 能说清「结构上什么合法」，却说不清「什么时候该带可选参数、哪些组合才合理、你的 API 遵循什么约定」。
+
+今天我们发布三个功能来满足这些需求：
+
+- **工具搜索（Tool Search Tool）**：让 Claude 用搜索去访问成千上万个工具，而不占用 context window
+- **编程式工具调用（Programmatic Tool Calling）**：让 Claude 在代码执行环境里调用工具，减少对 context window 的冲击
+- **工具使用示例（Tool Use Examples）**：提供一种通用方式，演示某个工具该怎么用
+
+在内部测试里，这些功能让我们做出了用传统工具使用方式做不到的东西。比如 Claude for Excel 就用编程式工具调用读写有几千行的表格，而不会把模型的 context window 撑爆。
+
+---
+
+## 一、工具搜索（Tool Search Tool）
+
+### 问题在哪
+
+MCP 工具定义提供了重要信息，但 server 一多，这些 token 就累加起来。看一个五 server 的配置：
+
+| MCP server | 工具数 | 约占 token |
+| --- | --- | --- |
+| GitHub | 35 | ~26K |
+| Slack | 11 | ~21K |
+| Sentry | 5 | ~3K |
+| Grafana | 5 | ~3K |
+| Splunk | 2 | ~2K |
+
+合计 58 个工具，对话还没开始就消耗了约 **55K token**。再加上 Jira（光它一个就 ~17K），很快逼近 10 万 token 的开销。在 Anthropic，我们见过优化前工具定义吃掉 **134K token** 的情况。
+
+而且 token 成本还不是唯一的问题。最常见的失败是**选错工具、传错参数**——尤其当工具名字长得像，比如 `notification-send-user` 和 `notification-send-channel`。
+
+### 解法
+
+工具搜索工具不再前置加载全部工具定义，而是**按需发现**。Claude 只看到当前任务真正需要的工具。
+
+- **传统做法**：所有定义前置加载（50+ MCP 工具约 72K token），对话历史和 system prompt 还要抢剩下的空间，开工前总消耗 ~77K token。
+- **用工具搜索**：开头只加载工具搜索工具本身（~500 token），需要时再按需发现 3-5 个相关工具（~3K token），总消耗 **~8.7K token，保住了 95% 的 context window**。
+
+这相当于 **token 用量减少 85%**，同时仍能访问你的完整工具库。在大型工具库的内部 MCP 评测里，准确率也明显提升：**Opus 4 从 49% 升到 74%，Opus 4.5 从 79.5% 升到 88.1%**。
+
+### 怎么运作
+
+你把全部工具定义都交给 API，但用 `defer_loading: true` 标记哪些工具「延迟加载」。被延迟的工具一开始不进 Claude 的 context，Claude 只看到工具搜索工具本身，外加那些 `defer_loading: false` 的工具（也就是你最关键、最常用的几个）。
+
+当 Claude 需要某种能力时，它去搜索相关工具，工具搜索工具返回匹配工具的「引用」，这些引用再被展开成完整定义进入 context。比如 Claude 要操作 GitHub，它搜 "github"，于是只有 `github.createPullRequest` 和 `github.listIssues` 被加载——而不是你来自 Slack、Jira、Google Drive 的其余 50 多个工具。
+
+> **关于 prompt caching**：工具搜索不会破坏提示词缓存。因为被延迟的工具压根没进初始提示词，只有在 Claude 搜索之后才加入 context，所以你的 system prompt 和核心工具定义仍然可缓存。
+
+实现上是这样：
+
+```json
+{
+  "tools": [
+    // 加入一个工具搜索工具（regex、BM25 或自定义）
+    {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"},
+
+    // 把工具标记为按需发现
+    {
+      "name": "github.createPullRequest",
+      "description": "Create a pull request",
+      "input_schema": {},
+      "defer_loading": true
+    }
+    // ... 还有成百上千个 defer_loading: true 的工具
+  ]
+}
+```
+
+对 MCP server，你可以整个 server 延迟加载，同时保留个别高频工具：
+
+```json
+{
+  "type": "mcp_toolset",
+  "mcp_server_name": "google-drive",
+  "default_config": {"defer_loading": true},
+  "configs": {
+    "search_files": {"defer_loading": false}
+  }
+}
+```
+
+平台自带 regex 和 BM25 两种搜索工具，你也可以用 embedding 或别的策略自己实现。
+
+### 什么时候用
+
+| ✅ 适合 | ❌ 收益不大 |
+| --- | --- |
+| 工具定义占用 >10K token | 工具库很小（<10 个） |
+| 遇到工具选择准确率问题 | 每次会话几乎都会用到所有工具 |
+| 构建多 server 的 MCP 系统 | 工具定义本身就很紧凑 |
+| 可用工具有 10 个以上 | |
+
+---
+
+## 二、编程式工具调用（Programmatic Tool Calling）
+
+### 问题在哪
+
+随着工作流变复杂，传统工具调用会带来两个根本问题：
+
+1. **中间结果污染 context**：Claude 要在一个 10MB 的日志文件里找错误模式，整个文件都进了 context window，哪怕它只需要一份「错误频次摘要」。跨多张表拉客户数据时，每条记录不管相不相关都堆进 context。这些中间结果吃掉巨量 token，甚至会把重要信息从 context window 里挤出去。
+2. **推理开销 + 手动综合**：每次工具调用都要走一遍完整模型推理。拿到结果后，Claude 还得「肉眼」去提取有用信息、推理各部分怎么拼起来、决定下一步——全靠自然语言处理。一个五工具的流程意味着五次推理，外加 Claude 逐个解析结果、比对数值、综合结论。又慢又容易错。
+
+### 解法
+
+编程式工具调用让 Claude 用**代码**来编排工具，而不是一次次单独的 API 往返。Claude 写一段代码去调多个工具、处理它们的输出，并**精确控制哪些信息真正进入 context window**。
+
+Claude 本来就擅长写代码。把编排逻辑用 Python 表达，而不是用自然语言去调工具，你就能得到更可靠、更精确的控制流——循环、条件、数据变换、错误处理全都明明白白写在代码里，而不是隐含在 Claude 的推理里。
+
+**例子：预算合规检查。** 任务是「哪些团队成员的 Q3 差旅费超预算了？」你有三个工具：`get_team_members(department)`、`get_expenses(user_id, quarter)`、`get_budget_by_level(level)`。
+
+| | 传统做法 | 编程式工具调用 |
+| --- | --- | --- |
+| 流程 | 拉 20 人 → 每人 20 次调用、各返回 50-100 条明细 → 再查预算 | Claude 写一段 Python，跑在代码执行沙箱里 |
+| 进 context 的数据 | 2,000+ 条报销明细（50KB+），逐人手动求和、查预算、比对 | 只有最终结果（超预算的那 2-3 人） |
+| 消耗 | 大量往返 + 巨量 context | 从 200KB 原始数据压到 ~1KB 结果 |
+
+Claude 写出的编排代码大致是这样：
+
+```python
+team = await get_team_members("engineering")
+
+# 为每个不同级别拉预算
+levels = list(set(m["level"] for m in team))
+budget_results = await asyncio.gather(*[
+    get_budget_by_level(level) for level in levels
+])
+budgets = {level: budget for level, budget in zip(levels, budget_results)}
+
+# 并行拉取所有报销
+expenses = await asyncio.gather(*[
+    get_expenses(m["id"], "Q3") for m in team
+])
+
+# 找出超出差旅预算的人
+exceeded = []
+for member, exp in zip(team, expenses):
+    budget = budgets[member["level"]]
+    total = sum(e["amount"] for e in exp)
+    if total > budget["travel_limit"]:
+        exceeded.append({
+            "name": member["name"],
+            "spent": total,
+            "limit": budget["travel_limit"]
+        })
+
+print(json.dumps(exceeded))
+```
+
+那 2,000+ 条明细、中间求和、预算查询，全都不影响 Claude 的 context。
+
+效率提升很实在：
+
+- **省 token**：把中间结果挡在 context 外，复杂研究任务上平均用量从 **43,588 降到 27,297（减少 37%）**。
+- **降延迟**：当 Claude 在一个代码块里编排 20+ 次工具调用，就省掉了 19+ 次推理往返。
+- **更准**：用显式代码写编排逻辑，比在自然语言里同时杂耍多个结果更不容易错。内部知识检索从 **25.6% 升到 28.5%**，GIA 基准从 **46.5% 升到 51.2%**。
+
+### 怎么运作
+
+1. **把工具标记为可从代码调用**：加入 `code_execution`，给要参与的工具设 `allowed_callers: ["code_execution_20250825"]`。API 会把这些工具定义转成 Claude 能调用的 Python 函数。
+2. **Claude 写编排代码**：不再一次请求一个工具，而是生成一段 `server_tool_use` 的 Python 代码。
+3. **工具执行但不碰 context**：当代码调用 `get_expenses()`，你收到带 `caller` 字段的工具请求；你返回的结果在代码执行环境里被处理，而不是进 Claude 的 context。这个请求-响应循环对代码里每次工具调用重复进行。
+4. **只有最终输出进 context**：代码跑完，只有 `stdout` 里的结果回到 Claude——而不是沿途处理过的那 2,000+ 条明细。
+
+### 什么时候用
+
+| ✅ 适合 | ❌ 收益不大 |
+| --- | --- |
+| 处理大数据集、只要聚合或摘要 | 简单的单工具调用 |
+| 多步工作流，3 个及以上有依赖的调用 | 你希望 Claude 看到并推理所有中间结果 |
+| 在 Claude 看到之前就过滤/排序/变换结果 | 响应很小的快速查询 |
+| 中间数据不该影响 Claude 推理 | |
+| 跨大量条目的并行操作（比如检查 50 个端点） | |
+
+---
+
+## 三、工具使用示例（Tool Use Examples）
+
+### 问题在哪
+
+JSON Schema 擅长定义结构——类型、必填字段、允许的枚举值——但它表达不了**使用模式**。
+
+拿一个工单 API 来说，schema 能说清什么合法，却留下一堆没答案的问题：
+
+- **格式歧义**：`due_date` 该用 `"2024-11-06"`、`"Nov 6, 2024"` 还是 `"2024-11-06T00:00:00Z"`？
+- **ID 约定**：`reporter.id` 是 UUID、`"USR-12345"` 还是就一个 `"12345"`？
+- **嵌套结构怎么用**：什么时候该填 `reporter.contact`？
+- **参数关联**：`escalation.level` 和 `escalation.sla_hours` 跟 `priority` 是什么关系？
+
+这些模糊地带会导致调用格式错误、参数用法前后不一。
+
+### 解法
+
+工具使用示例让你直接在工具定义里给出样例调用。不再只靠 schema，而是给 Claude 看具体的用法。你可以在 `input_examples` 里放几个示范，比如一个「完整填写」的严重 bug 工单、一个「部分填写」的需求工单、一个「只填标题」的内部任务。
+
+从这三个例子里，Claude 能学到：
+
+- **格式约定**：日期用 `YYYY-MM-DD`，用户 ID 遵循 `USR-XXXXX`，标签用 kebab-case
+- **嵌套结构模式**：怎么构造 `reporter` 对象及其内嵌的 `contact`
+- **可选参数的关联**：严重 bug 配齐联系方式和紧 SLA 的升级；需求工单有 reporter 但无 contact/升级；内部任务只有标题
+
+在我们内部测试里，工具使用示例让复杂参数处理的准确率**从 72% 升到 90%**。
+
+### 什么时候用
+
+| ✅ 适合 | ❌ 收益不大 |
+| --- | --- |
+| 复杂嵌套结构，合法 JSON 不等于用对了 | 用法显而易见的单参数工具 |
+| 工具有很多可选参数、且取舍有讲究 | URL、email 这类 Claude 已熟悉的标准格式 |
+| API 有 schema 里没体现的领域约定 | 用 JSON Schema 约束就能解决的校验问题 |
+| 相似工具，需要示例点明该用哪个 | |
+
+---
+
+## 把三者组合起来：最佳实践
+
+构建能在真实世界里行动的 agent，意味着同时应对**规模、复杂度、精度**。这三个功能解决工具使用流程里的不同瓶颈。
+
+**⭐ 按需分层，从最大的瓶颈下手：**
+
+| 你的瓶颈 | 对应功能 |
+| --- | --- |
+| 工具定义把 context 撑爆 | 工具搜索 |
+| 大块中间结果污染 context | 编程式工具调用 |
+| 参数出错、调用格式错误 | 工具使用示例 |
+
+不必一上来就三个全用。它们是互补的：**工具搜索保证找对工具，编程式调用保证高效执行，工具使用示例保证调用正确。**
+
+几条具体建议：
+
+- **为工具搜索写清晰的名字和描述**。搜索是按名字和描述匹配的，`search_customer_orders`（带一句说明它按日期/状态/金额查、返回什么）远胜过 `query_db_orders`（「执行订单查询」）。在 system prompt 里告诉 Claude 都有哪些能力。保留 3-5 个最常用工具常驻，其余延迟加载。
+- **为编程式调用写清返回格式**。Claude 要写代码解析工具输出，所以在描述里说明返回结构（字段名、类型、取值），它才能写出正确的解析逻辑。优先让可并行、幂等的操作走编程式编排。
+- **为工具使用示例用真实数据**。用真实城市名、合理价格，而不是 `"string"`、`"value"`；展示「最小 / 部分 / 完整」三种填法；每个工具 1-5 个示例即可；只在「光看 schema 不明显」的地方补示例。
+
+---
+
+## 怎么开始用
+
+这些功能目前是 beta。加上 beta header，引入你需要的工具即可：
+
+```python
+client.beta.messages.create(
+    betas=["advanced-tool-use-2025-11-20"],
+    model="claude-sonnet-4-5-20250929",
+    max_tokens=4096,
+    tools=[
+        {"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"},
+        {"type": "code_execution_20250825", "name": "code_execution"},
+        # 你的工具，带上 defer_loading、allowed_callers、input_examples
+    ]
+)
+```
+
+> **直觉**：这三个功能把工具使用从「简单的函数调用」推向「智能的编排」。当 agent 要应对横跨几十个工具、动辄大数据集的复杂工作流，**动态发现（找对）、高效执行（用好）、可靠调用（调对）** 这三件事，就成了地基。说到底，它们的共同内核只有一句——**别让无关信息占着 context**。

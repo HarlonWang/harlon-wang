@@ -1,0 +1,156 @@
+---
+title: 「think」工具：让 Claude 在复杂工具调用中途停下来想一想
+type: translation
+publishDate: 2026-05-29
+description: 一个简单到出奇的「think」工具，给 Claude 一块在工具调用链中途停下来核对规则、检查信息的草稿纸，在客服等规则繁多的场景里显著提升表现。
+tags:
+  - AI
+  - Agent
+  - Tool use
+  - Think tool
+  - Extended thinking
+source:
+  title: 'The "think" tool: Enabling Claude to stop and think in complex tool use situations'
+  url: https://www.anthropic.com/engineering/claude-think-tool
+  author: Anthropic
+  siteName: Anthropic Engineering
+  publishDate: 2025-03-21
+translator: Harlon Wang
+---
+
+> 我们最近引入了一个新的「think」工具，它提升了 Claude 处理复杂多步问题的能力——尤其是那些需要遵守规章、需要在一连串工具调用之间推理的场景。这篇讲清楚：它是什么、什么时候用、怎么用好。
+
+**⚠️ 扩展思考更新（2025-12-15）**：自本文最初发布以来，extended thinking（扩展思考）能力已有提升。如今**大多数场景下，我们建议直接用扩展思考，而非专门的 think 工具**——扩展思考能提供类似的好处（给 Claude 空间去推理复杂问题），且集成更好、性能更优。实现细节见[扩展思考文档](https://docs.claude.com/en/docs/build-with-claude/extended-thinking)。下文仍保留对 think 工具的原始介绍，作为理解这一思路的参考。
+
+---
+
+## 「think」工具是什么
+
+有了这个新的「think」工具，我们等于给了 Claude 一个能力：在通往最终答案的路上，插入一个额外的思考步骤——还配上一块**专门的空间**。
+
+它和 **extended thinking（扩展思考）** 有本质区别。extended thinking（我们随 Claude 3.7 Sonnet 推出）关注的是 Claude **开始生成回复之前**做什么——帮它在动笔前想透问题、反思、规划。而 think 工具关注的是**生成回复过程中**的思考——发生在 Claude 已经开始回应用户、并且拿到了工具调用结果**之后**。
+
+think 工具的实现简单得有点出人意料。一个示例定义：
+
+```json
+{
+  "name": "think",
+  "description": "Use the tool to think about something. It will not obtain new information or change the database, but just append the thought to the log. Use it when complex reasoning or some cache memory is needed.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "thought": {
+        "type": "string",
+        "description": "A thought to think about."
+      }
+    },
+    "required": ["thought"]
+  }
+}
+```
+
+快速对照一下这两者：
+
+| | extended thinking | 「think」工具 |
+| --- | --- | --- |
+| 思考发生在 | 生成回复**之前** | 生成回复**过程中**（拿到工具结果后） |
+| 最擅长 | 动笔前想透、反思、规划 | 工具调用链中途的反思与核对 |
+| 一句话 | 制定计划时用 | 执行计划、处理结果时用 |
+
+---
+
+## 什么时候该用 think 工具
+
+think 工具在特定场景里表现尤其出色，主要是当 Claude 需要：
+
+- **仔细分析工具输出**：当 Claude 需要在行动前认真处理前几次工具调用的结果，并可能要中途纠偏（backtrack）时。
+- **在规则繁多的环境里穿行**：当 Claude 需要遵守详尽的规章并验证是否合规时——这在客服等领域很常见，那里有一大堆「能做/不能做」的规则。
+- **做有先后顺序的决策**：当每个动作都建立在前一个之上、且犯错代价高昂时，比如订机票、安排行程这类多步任务。
+
+这些场景往往有一个典型的工具使用模式：Claude 需要调用工具（常常是多次），处理结果后再继续。think 工具给了它在这些调用链**中途反思**的机会，而不是只在最后的回复里才「出声地想」。
+
+---
+
+## think 工具如何提升表现
+
+为了搞清楚它的影响，我们用 **τ-bench（读作 tau-bench）** 做了全面评测。这个基准专门测试模型在真实客服场景下使用工具的能力——考察 agent 能否在跟模拟用户和工具交互的同时，始终遵守详尽的规章。
+
+### τ-bench 结果
+
+我们最初的实验发现：当 think 工具搭配一个**含领域专属指引**的优化提示词时，提升尤为明显。这个组合达到了：
+
+- **航空领域 0.570**，相比基线 0.370 —— **相对提升 54%**
+- **零售领域 0.812**，相比基线 0.783
+
+我们在 τ-bench 上测了几种配置：① think 工具 + 含领域示例的优化提示词；② 单用 think 工具、不做特别提示；③ 单用 extended thinking；④ 两者都不用的基线。
+
+τ-bench 的航空领域规则更繁、场景更难，所以基线本就比零售低——但这恰恰让它成为 think 工具的理想试验场，因为结构化推理有更多用武之地。在航空领域，**think 工具 + 优化提示词**明显胜过「单用 think 工具」和基线；零售领域则即使不加优化提示词，单用 think 工具也表现不错。
+
+### 一致性也更好
+
+除了这些头条数字，我们还发现 think 工具提升了 Claude **跨多次运行的一致性**。用 think 工具加优化提示词后，Claude 能更可靠地遵守规章、更准地处理边缘情况（以 pass^k 指标衡量）。
+
+我们也在 **SWE-bench** 上测了它，帮助 Claude 3.7 Sonnet 把分数提升到 **0.623**。这里的提升虽然更小，但说明：即便在以编码为主的任务上，留出一块专门的推理空间也有帮助。
+
+---
+
+## 什么时候用 / 什么时候不用
+
+根据评测，think 工具在这些场景收益最大：
+
+| ✅ 收益大 | ❌ 收益不大 |
+| --- | --- |
+| 行动前需仔细分析工具输出、可能要纠偏 | 任务只涉及单次或互不关联的工具调用 |
+| 在要求严守详尽规章的环境里运行 | 需要大量非套路化的创造性思考 |
+| 一系列层层递进、犯错代价高的决策 | 指令很直白、没有复杂规则要遵守 |
+
+---
+
+## 怎么把 think 工具用到位
+
+通过实验，我们总结出几条最佳实践：
+
+**1. 用领域专属示例做有策略的提示。** 你能做的最有影响力的一件事，就是清楚地说明「何时、如何」使用 think 工具，并给出贴合你具体用例的示例。我们发现，一旦在 `thought` 参数里加入「我们想看到的那种推理」的示例，效果就大幅改善。
+
+下面是我们在航空领域为了榨出 think 工具最大价值所用提示词的一个例子：
+
+```
+## Using the think tool
+
+Before taking any action or responding to the user after receiving tool results, use the think tool as a scratchpad to:
+- List the specific rules that apply to the current request
+- Check if all required information is collected
+- Verify that the planned action complies with all policies
+- Iterate over tool results for correctness
+
+Here are some examples of what to iterate over inside the think tool:
+<think_tool_example_1>
+User wants to cancel flight ABC123
+- Need to verify: user ID, reservation ID, reason
+- Cancellation rules:
+  * How many cabins were booked?
+  * Are any of the segments flown already?
+  * Is it within 24 hrs of booking?
+  * Is the ticket refundable?
+- Plan: collect missing info, verify rules, process cancellation, send confirmation
+</think_tool_example_1>
+[... 更多示例 ...]
+```
+
+我们发现，把这类领域专属指引放进 **system prompt（系统提示词）**，而不是工具描述本身，往往效果更好——这能在任务的整体语境里给 Claude 更清晰的指引。
+
+**2. 复杂指引放进 system prompt。** 处理复杂领域时，建议把「如何使用 think 工具」的说明放进系统提示词，包括「该在 think 里做哪种推理」的示例、针对特定场景该考虑什么的结构化指引，以及不同规章/约束之间如何权衡。
+
+---
+
+## 你该用 think 工具吗
+
+think 工具是 Claude 工具箱里一个有价值的补充，尤其对复杂的多步任务而言。但和任何工具一样，它的效果取决于具体用例和实现得好不好。我们建议在这些情况下优先尝试：
+
+- 你的 agent 需要遵守详尽的规章或指引
+- 你在构建的工具涉及处理「前几次工具调用的输出」
+- 你的应用涉及层层递进的顺序决策
+
+think 工具实现起来相当容易——就是加一个带简单描述的新工具——这让它成了一个**低成本、值得一试**的实验，特别适合复杂的 agentic（代理式）任务。
+
+> **直觉**：人在做复杂决策时也会停下来打草稿、对一对清单。think 工具就是给模型同样一块**草稿纸**——它不必把所有推理硬塞进一条回复、也不必没想透就贸然行动。要用好它，记得搭配领域专属的提示词优化，再放手在你自己的用例上试一试。

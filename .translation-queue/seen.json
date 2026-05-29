@@ -6,8 +6,10 @@
     },
     "https://www.anthropic.com/engineering/advanced-tool-use": {
         "lastmod": "2026-03-16T16:09:03.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "advanced-tool-use",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/AI-resistant-technical-evaluations": {
         "lastmod": "2026-01-22T01:16:20.000Z",
@@ -50,13 +52,17 @@
     },
     "https://www.anthropic.com/engineering/claude-think-tool": {
         "lastmod": "2025-12-15T18:02:25.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "claude-think-tool",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/code-execution-with-mcp": {
         "lastmod": "2025-11-04T22:06:04.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "code-execution-with-mcp",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/contextual-retrieval": {
         "lastmod": "2026-01-07T15:00:44.000Z",
@@ -82,13 +88,17 @@
     },
     "https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents": {
         "lastmod": "2025-11-26T18:07:21.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "effective-harnesses-for-long-running-agents",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills": {
         "lastmod": "2026-04-15T14:39:01.000Z",
-        "status": "pending",
-        "discoveredAt": "2026-05-28"
+        "status": "translated",
+        "discoveredAt": "2026-05-28",
+        "translatedSlug": "equipping-agents-for-the-real-world-with-agent-skills",
+        "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/eval-awareness-browsecomp": {
         "lastmod": "2026-03-18T20:16:12.000Z",

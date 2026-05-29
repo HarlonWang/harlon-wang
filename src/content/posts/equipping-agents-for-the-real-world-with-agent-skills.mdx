@@ -1,0 +1,161 @@
+---
+title: 用 Agent Skills 把 agent 武装到能干真活
+type: translation
+publishDate: 2026-05-29
+description: 让专家成为专家的，不只是知识，而是「在这儿我们怎么做事」的实战经验。Agent Skills 把这种经验打包成可组合、可移植、按需加载的文件夹，靠渐进式披露绕开 context 限制。
+tags:
+  - AI
+  - Agent
+  - Agent Skills
+  - Context
+  - 渐进式披露
+source:
+  title: Equipping agents for the real world with Agent Skills
+  url: https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills
+  author: Anthropic
+  siteName: Anthropic Engineering
+  publishDate: 2025-10-16
+translator: Harlon Wang
+---
+
+> 是什么让一个人成为专家？不只是知识——而是**知道怎么把知识用到实处**。AI agent 面临同样的难题：底层模型知识渊博，但开箱即用时，缺的恰恰是真实任务所需的、专属的、带语境的知识。我们做 **Agent Skills** 就是为了补上这道缺口。
+
+一个新分析师加入金融公司时，带着扎实的金融、会计、建模基础。但他还没法立刻在这个**具体岗位**上高效干活：他不知道公司的现金流折现（DCF）模型怎么搭、营收预测该用哪些假设、给投委会的输出该怎么排版。这种实战的、组织内部的知识——**「在这儿我们怎么做事」**——才是把通用能力变成专家级表现的东西。
+
+---
+
+## Agent Skill 是什么
+
+一个 Agent Skill，就是一个**文件夹**，里面装着 agent 为完成某项任务可以加载的说明、脚本和资源。
+
+最简单的 Skill，就是一个只含单个文件 **`SKILL.md`** 的文件夹，文件里是自然语言写的说明。更复杂的 Skill 可以包含更多文件：参考文档、脚本、模板和其他资源。
+
+Skill 背后的关键洞见是：它们**可组合、可移植、且高效**。它们让你把专长——「在这儿我们怎么做事」——打包成一种任何 agent 都能加载和使用的格式。
+
+下面是一个最小的 `SKILL.md` 例子：
+
+```markdown
+---
+name: pdf-processing
+description: Extracts text and tables from PDF files, fills forms, and merges documents. Use when working with PDF files.
+---
+
+# PDF Processing
+
+## Overview
+This Skill provides tools for working with PDF files...
+
+## Extracting text
+To extract text from a PDF, use the `extract_text.py` script...
+```
+
+文件开头是 YAML frontmatter，包含元数据（name 和 description），后面跟着 Markdown 写的说明。这个简单结构，是每个 Skill 的基础。
+
+---
+
+## 难题：context window 是有限的
+
+要理解 Skill 为什么这么设计，得先理解一个根本约束：**context window（上下文窗口）**。
+
+agent 的上下文窗口，是它一次能考虑的信息量，是一种**有限资源**。agent 需要知道的一切——用户请求、对话历史、它正在处理的文件内容、它能用的工具定义——都得塞进这个窗口。
+
+给 agent 灌专属知识，最朴素的办法是：把它可能需要的一切**一上来全加载进**上下文窗口。但这不可扩展。如果你把每个可能任务的完整文档都加载进来，agent 还没干活，上下文窗口就被耗尽了——而且其中大部分信息跟眼前任务无关。
+
+Skill 用一个叫 **渐进式披露（progressive disclosure）** 的设计原则解决了这个问题。
+
+---
+
+## 渐进式披露
+
+渐进式披露的思路是：信息应该**随用随揭示**，逐步给出，而不是一次性全抛出来。
+
+Skill 通过一个多层结构来实现它：
+
+| 层级 | 加载什么 | 什么时候 |
+| --- | --- | --- |
+| **Level 1：元数据** | 只加载 name 和 description | agent 一启动就加载 |
+| **Level 2：SKILL.md 正文** | 完整的详细说明 | agent 判断某 Skill 与当前任务相关时 |
+| **Level 3：捆绑资源** | 参考文档、脚本、模板等 | 跟着 SKILL.md 的说明走、需要时才加载 |
+
+- **Level 1**：agent 启动时只加载可用 Skill 的元数据——就 YAML frontmatter 里的 name 和 description。信息量很小，所以 agent 可以同时拥有很多 Skill 而不太占 context。description 告诉 agent 这个 Skill 干什么、什么时候用。
+- **Level 2**：当 agent（基于 description）判断某个 Skill 与当前任务相关，才加载完整的 `SKILL.md`，里面是使用这个 Skill 的详细说明。
+- **Level 3**：`SKILL.md` 可以引用更多文件——参考文档、脚本、模板。这些只在 agent 跟着说明走、真正需要时才加载。
+
+这个多层结构意味着：**agent 可以坐拥一个庞大的 Skill 库，却只为它真正用到的那些 Skill 付出 context 成本。**
+
+举个具体例子。假设一个 agent 能访问 100 个 Skill，每个的详细说明平均 5,000 token：
+
+| 做法 | context 消耗 |
+| --- | --- |
+| 全部前置加载 | 500,000 token —— 超过大多数上下文窗口 |
+| 渐进式披露 | 前置只加载元数据（每个约 100 token，共 ~10,000），再为用到的 2-3 个 Skill 加载完整说明（~10,000-15,000 token） |
+
+总 context 成本，只是「全量加载」的一个零头。
+
+---
+
+## Skill 可以包含可执行代码
+
+Skill 最强大的一点是：它能包含**可执行代码**——agent 能运行的脚本。
+
+为什么这很重要？因为**有些任务用代码做，比用语言模型推理做更好**。如果你要从一张一千行的表格里抽数据、旋转一个 PDF、批量改一堆图片的尺寸，你不会想让 agent 一个 token 一个 token 地推理每一步——你想让它**跑个脚本**。
+
+Skill 让你把这些脚本和「怎么用它们」的说明捆在一起。`SKILL.md` 可以告诉 agent：「要完成这个任务，运行这个脚本。」agent 执行脚本，活儿就被可靠又高效地干完了——还不必在中间步骤上消耗 context。
+
+这接上了一个更大的原则：**当 agent 能把代码当工具用时，它最高效**。语言模型推理强大又灵活，但并不总是手边任务的最佳工具。对确定性、重复性或计算密集的任务，代码更快、更可靠、更高效。Skill 让你为每个任务配上对的工具。
+
+---
+
+## Skill 是可组合的
+
+Skill 被设计成**可组合**：agent 可以同时用多个 Skill 来完成一个复杂任务。
+
+假设你让 agent 分析一份季度报告并做成演示文稿。这可能涉及好几个 Skill：一个从 PDF 抽数据、一个分析财务数据、一个生成图表、一个按公司品牌规范排版演示文稿。agent 按需加载并应用每个 Skill，把它们组合成一条完成整体任务的工作流。
+
+这种可组合性很强大，因为它让你能搭建一个由**聚焦、可复用**的 Skill 组成的库，而不是一个个庞大、专用的配置。每个 Skill 把一件事做好，agent 按需把它们组合起来。
+
+---
+
+## Skill 在 Claude 生态里可移植
+
+我们把 Skill 设计成「在 Claude 运行的任何地方都一个样」。同一个 Skill 通用于：
+
+- **Claude apps**：用于个人和团队工作流
+- **Claude Code**：用专门工作流增强 Claude 的编码能力
+- **Claude Developer Platform**：开发者通过 API 用 Skill 构建自定义 agent
+
+这种可移植性意味着：你**写一次，处处可用**。也意味着别人——同事、供应商、或更广的社区——做的 Skill，可以直接丢进你的 agent 里就能跑。
+
+---
+
+## Skill 对比其他做法
+
+| 做法 | 特点 | 局限 |
+| --- | --- | --- |
+| **提示词（Prompting）** | 把说明放进 system prompt | 每次交互都消耗 context，不管说明相不相关；Skill 则按需加载，不付这笔成本 |
+| **微调（Fine-tuning）** | 训练一个专门化的模型 | 昂贵、需要技术门槛、产出的模型难更新；Skill 任何人都能即时创建和修改 |
+| **工具（MCP）** | 给 agent 新**能力**——在世界里行动 | 工具给的是「能做什么」，Skill 给的是「怎么做」的**知识**；两者互补——一个 Skill 可以告诉 agent 怎么用一组工具完成任务 |
+
+Skill 占据了一个独特位置：**比微调更灵活，比提示词更高效，比单用工具更富含知识。**
+
+---
+
+## 怎么写出有效的 Skill
+
+在构建和使用 Skill 的过程中，我们总结出几条原则：
+
+- **为 agent 写，而不是为人写。** Skill 是给 agent 的说明，所以把 agent 当读者。清晰、直接，避免歧义，预想 agent 可能有的疑问并提前解答。
+- **description 要具体。** 元数据里的 description 是 agent 判断「这个 Skill 相不相关」的依据。把它写具体，带上 agent 会和这个任务联想到的关键术语。description 含糊，Skill 该被加载时就不会被加载。
+- **保持 SKILL.md 聚焦。** 正文只放核心说明，把详细参考资料挪到单独文件里、需要时才加载。这能压低 context 成本。
+- **确定性任务用脚本。** 如果一个任务用代码比用推理更可靠，就放个脚本进去，让 Skill 更可靠、更高效。
+- **测试并迭代。** 跟任何工件一样，Skill 也受益于测试和打磨。观察 agent 怎么用它、在哪卡壳，据此改进说明。
+
+---
+
+## 前路
+
+Skill 代表了「我们如何定制 agent」这件事上的一次转变：与其为每个任务造一个专门的 agent，不如造**通用 agent**，再按需用 Skill 武装它。
+
+> 这恰好呼应了人类培养专长的方式：我们不会为每份工作从零训练一个新人，而是从一个通用能力强的人出发，**给他配上岗位所需的具体知识和流程**。
+
+我们相信 Skill 会成为 agent 的一块基础构件。随着生态成长，我们预期会出现一个个 Skill 库——有 Anthropic 做的、有第三方做的、也有个人用户做的——它们能被组合起来，完成越来越宽广的任务。
