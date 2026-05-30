@@ -2,6 +2,7 @@
 import BaseLayout from './BaseLayout.astro';
 import TranslationBanner from '@/components/TranslationBanner.astro';
 import TranslationFooter from '@/components/TranslationFooter.astro';
+import Comments from '@/components/Comments.astro';
 import type { CollectionEntry } from 'astro:content';
 
 interface Props {
@@ -50,4 +51,6 @@ const badge = isTranslation
 
     {isTranslation && data.source && <TranslationFooter source={data.source} />}
   </article>
+
+  {data.comments !== false && <Comments />}
 </BaseLayout>

@@ -1,0 +1,45 @@
+---
+// 文章评论 + 点赞（reaction）+ 阅读量（pageview），由 Waline 提供。
+// 服务端地址默认指向 comment.harlon.wang，可用 PUBLIC_WALINE_SERVER_URL 覆盖（如本地联调）。
+---
+
+<section class="comments" aria-label="评论">
+  <div id="waline"></div>
+</section>
+
+<script>
+  import { init } from '@waline/client';
+  import '@waline/client/style';
+
+  const serverURL =
+    import.meta.env.PUBLIC_WALINE_SERVER_URL || 'https://comment.harlon.wang';
+
+  init({
+    el: '#waline',
+    serverURL,
+    path: window.location.pathname,
+    lang: 'zh-CN',
+    // 跟随站点的系统暗色模式
+    dark: '@media (prefers-color-scheme: dark)',
+    // 本期需求：点赞与阅读量
+    reaction: true,
+    pageview: true,
+  });
+</script>
+
+<style>
+  .comments {
+    margin-top: 3em;
+    padding-top: 1.5em;
+    border-top: 1px solid var(--color-border);
+  }
+  /* 让 Waline 的主题色与站点链接色保持一致 */
+  .comments :global(#waline) {
+    --waline-theme-color: var(--color-link);
+    --waline-active-color: var(--color-link);
+    --waline-bgcolor: var(--color-bg);
+    --waline-bgcolor-light: var(--color-code-bg);
+    --waline-color: var(--color-text);
+    --waline-border-color: var(--color-border);
+  }
+</style>

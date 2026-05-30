@@ -21,6 +21,8 @@ const posts = defineCollection({
         })
         .optional(),
       translator: z.string().default('Harlon Wang'),
+      // 是否展示评论区（含点赞/阅读量），默认开启；个别文章可设 false 关闭
+      comments: z.boolean().default(true),
     })
     .superRefine((data, ctx) => {
       if (data.type === 'translation' && !data.source) {
