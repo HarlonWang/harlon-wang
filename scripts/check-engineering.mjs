@@ -4,8 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const SITEMAP_URL = 'https://www.anthropic.com/sitemap.xml';
+const INSTITUTE_INDEX_URL = 'https://www.anthropic.com/institute';
 const SEEN_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '.translation-queue', 'seen.json');
 const TODAY = new Date().toISOString().slice(0, 10);
+
+function sectionFromUrl(url) {
+    return url.includes('/institute/') ? 'Institute' : 'Engineering';
+}
 
 async function fetchSitemapEntries() {
     const res = await fetch(SITEMAP_URL);
@@ -15,11 +20,26 @@ async function fetchSitemapEntries() {
     for (const block of xml.match(/<url>[\s\S]*?<\/url>/g) ?? []) {
         const loc = block.match(/<loc>([^<]+)<\/loc>/)?.[1];
         const lastmod = block.match(/<lastmod>([^<]+)<\/lastmod>/)?.[1];
-        if (loc && /\/engineering\/[^/]+$/.test(loc)) {
+        // institute 也匹配，以防将来 Anthropic 把它加进 sitemap
+        if (loc && /\/(engineering|institute)\/[^/]+$/.test(loc)) {
             entries.push({ url: loc, lastmod });
         }
     }
     return entries;
+}
+
+// Institute 文章不在 sitemap 里，只能从列表页提取链接（没有 lastmod，仅能发现新文章）
+async function fetchInstituteEntries() {
+    const res = await fetch(INSTITUTE_INDEX_URL);
+    if (!res.ok) throw new Error(`institute index fetch failed: ${res.status}`);
+    const html = await res.text();
+    const slugs = new Set(
+        [...html.matchAll(/href="\/institute\/([^"/?#]+)"/g)].map((m) => m[1])
+    );
+    return [...slugs].map((slug) => ({
+        url: `https://www.anthropic.com/institute/${slug}`,
+        lastmod: null,
+    }));
 }
 
 async function fetchTitle(url) {
@@ -49,7 +69,7 @@ function ghIssueCreate({ title, body }) {
 function buildNewIssueBody({ url, lastmod }) {
     return [
         `**原文 URL**：${url}`,
-        `**Sitemap lastmod**：${lastmod}`,
+        lastmod ? `**Sitemap lastmod**：${lastmod}` : '**来源**：Institute 列表页（无 lastmod）',
         '',
         '## 触发翻译',
         '',
@@ -100,7 +120,12 @@ async function saveSeen(data) {
 }
 
 async function main() {
-    const entries = await fetchSitemapEntries();
+    const sitemapEntries = await fetchSitemapEntries();
+    const instituteEntries = await fetchInstituteEntries();
+    // sitemap 优先（带 lastmod）；列表页只补充 sitemap 里没有的 URL
+    const byUrl = new Map();
+    for (const e of [...instituteEntries, ...sitemapEntries]) byUrl.set(e.url, e);
+    const entries = [...byUrl.values()];
     const seen = await loadSeen();
     let mutated = false;
     const created = [];
@@ -111,7 +136,7 @@ async function main() {
         if (!prev) {
             const title = (await fetchTitle(url)) ?? slugFromUrl(url);
             ghIssueCreate({
-                title: `[新文章] ${title}`,
+                title: `[新文章·${sectionFromUrl(url)}] ${title}`,
                 body: buildNewIssueBody({ url, lastmod }),
             });
             seen[url] = { lastmod, status: 'pending', discoveredAt: TODAY };
@@ -120,7 +145,8 @@ async function main() {
             continue;
         }
 
-        if (prev.lastmod !== lastmod) {
+        // 仅 sitemap 来源有 lastmod；列表页来源（null）不做更新检测
+        if (lastmod && prev.lastmod !== lastmod) {
             const prevLastmod = prev.lastmod;
             prev.lastmod = lastmod;
             mutated = true;

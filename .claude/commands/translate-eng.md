@@ -1,9 +1,9 @@
 ---
-description: 把 Anthropic Engineering 文章翻译成本站 MDX 草稿
+description: 把 Anthropic Engineering / Institute 文章翻译成本站 MDX 草稿
 argument-hint: <原文 URL>
 ---
 
-请把下面这篇 Anthropic Engineering 文章翻译成中文 MDX 草稿，发布到本站。
+请把下面这篇 Anthropic 文章翻译成中文 MDX 草稿，发布到本站。
 
 **原文 URL**：$ARGUMENTS
 
@@ -19,9 +19,9 @@ argument-hint: <原文 URL>
     - `tags`: 主题归纳，中文 + 必要英文术语
     - `source.title`: 原文英文标题
     - `source.url`: $ARGUMENTS
-    - `source.author`: Anthropic
-    - `source.siteName`: Anthropic Engineering
-    - `source.publishDate`: 原文发布日期
+    - `source.author`: 按栏目区分——`/engineering/` 用 `Anthropic`；`/institute/` 用原文署名作者（如 `Marina Favaro & Jack Clark`）
+    - `source.siteName`: 按栏目区分——`/engineering/` 用 `Anthropic Engineering`；`/institute/` 用 `The Anthropic Institute`
+    - `source.publishDate`: 原文发布日期（页面没写就省略该字段）
     - `translator`: Harlon Wang
 4. **正文翻译风格**（务必参考 `src/content/posts/claude-code-best-practices.mdx`）：
     - 意译为主、口语化，不要逐句直译
