@@ -1,0 +1,140 @@
+---
+title: 把 KMP/Compose App 上架 F-Droid：被 CI 逐条拷打的六个坑
+type: original
+authorship: co-authored
+publishDate: 2026-06-08
+description: TrendingAI 上架 F-Droid 的完整实录——从「源码自建而非上传 APK」的机制，到被 9 道 CI 检查逐个打回、从 0.15.0 一路发到 0.15.3 才全绿的六个坑。大多是文档里查不到、只能撞出来的细节。
+tags:
+  - F-Droid
+  - Kotlin Multiplatform
+  - Compose Multiplatform
+  - Android
+  - CI/CD
+  - GitHub Actions
+---
+
+这两天把 [TrendingAI](https://github.com/HarlonWang/TrendingAI)（一个 KMP + Compose Multiplatform 的 Android app）提交上架 F-Droid。流程本身有章可循，但 F-Droid 的一个根本特点——**从源码自建，而不是上传 APK**——决定了它的 CI 会把你的工程逐条检查一遍，而每一条不通过，都要发一个新 tag 或改一次 MR 才能重新验证。
+
+我从 `0.15.0` 一路发到 `0.15.3`，被 9 道 CI 检查逐个打回，最后才全绿。这篇记录从客户端改造到 MR 全绿撞到的六个坑，大多文档里查不到。
+
+## 整体链路
+
+F-Droid 上架不是「上传 APK」，而是「提一份元数据，让它自己编译」：
+
+```
+fork gitlab.com/fdroid/fdroiddata
+    ↓ 写 metadata/<包名>.yml（指向你的 GitHub repo + 某个 commit）
+提 Merge Request
+    ↓ F-Droid buildserver checkout 你的 tag 源码，跑 gradle 自建 + 用自己的 key 签名
+9 个 CI job：lint / schema validation / rewritemeta / fdroid build / check apk / checkupdates ...
+    ↓ 全绿 + maintainer review
+合并 → 约 24–48h 进 F-Droid 主仓库
+```
+
+几个上来就要接受的前提：
+
+- **它在自己的服务器上编译你的代码**。所以你工程里任何「只在自己 CI 里才成立的东西」——环境变量注入的版本号、从 Secrets 读的签名配置——F-Droid 都拿不到。这是后面一半坑的根源。
+- **必须有一个不含自建 updater 的构建变体**。F-Droid 政策禁止 app 自行下载可执行文件更新（更新由 F-Droid 客户端统一管理）。我新建了一个 `fdroid` product flavor，里面的 `UpdateWrapper` 是空实现（直接渲染内容，不挂自建更新逻辑）。
+- **本地没 Docker 就只能远程验证**。完整跑 F-Droid 构建要它的 Docker buildserver，我没本地装，直接提 MR 让 GitLab CI 跑——代价是每个坑都得「改 → 发 tag/commit → 等 CI 几分钟 → 看日志」，反馈环很长。
+
+## 坑 1：versionCode 不可复现
+
+我们的 `versionCode` 原本等于 CI 的 `github.run_number`（GitHub Actions 注入的环境变量）。F-Droid buildserver 没有这个变量，`versionCode` 直接回落到 fallback 值 `1`——每个版本都是 1，F-Droid 根本无法识别版本递增。
+
+修复是把版本号改成**从 git tag 推导**，这样任何环境从同一个 tag 都能算出同一个 versionCode：
+
+```kotlin
+// tag「MAJOR.MINOR.PATCH」→ versionCode = MAJOR*10000 + MINOR*100 + PATCH
+// 0.15.3 → 1503，1.0.0 → 10000。业界标准的 6 位编码。
+fun versionCodeFromTag(tag: String?): Int { /* 正则解析 + 越界护栏 */ }
+
+// CI 注入的 VERSION_NAME 优先；缺失时（F-Droid 自建/本地）从 git 读
+val tag = System.getenv("VERSION_NAME") ?: gitDescribe("--abbrev=0")
+versionCode = versionCodeFromTag(tag)
+```
+
+两个细节：读 git 要用 `providers.exec`（Gradle configuration-cache 下 `Runtime.exec` 会破坏缓存）；公式每段预留 2 位（minor/patch ≤ 99），加一道 `require` 护栏，越界直接构建失败，免得静默产出和隔壁版本撞车的 versionCode。
+
+## 坑 2：fdroid build —— SigningConfig 'release' not found
+
+第一次 build 直接挂在签名上。日志里有一行关键提示：`Cleaned build.gradle.kts of keysigning configs`——**F-Droid 构建时会自动剥离 build.gradle 里的 signingConfigs 定义**（它要用自己的 key 重签）。
+
+但它只删了 `signingConfigs { create("release") { ... } }` 的定义，没删 buildTypes 里的引用，于是：
+
+```kotlin
+// 剥离 signingConfigs 定义后，这行的 getByName 找不到 release → 抛异常
+val releaseConfig = signingConfigs.getByName("release")
+```
+
+修复是把 `getByName` 换成 `findByName`（找不到返回 null 而不是抛错），回落到 debug 占位签名（反正 F-Droid 之后会用自己的 key 重签）：
+
+```kotlin
+val releaseConfig = signingConfigs.findByName("release")
+signingConfig = if (releaseConfig?.storeFile?.exists() == true) releaseConfig
+                else signingConfigs.getByName("debug")
+```
+
+因为没法本地跑 F-Droid 构建，我**手动模拟剥离**——临时把 signingConfigs 的 release 定义删掉，本地跑 `assembleFdroidRelease`，确认能回落 debug 签名成功，才敢发 tag。这步省不得，上一个 tag 就是没验证这个才白发的。
+
+## 坑 3：schema —— AutoUpdateMode is a required property
+
+metadata yml 的 `AutoUpdateMode` 是 schema **必填**字段。我一度为了配合「手动维护版本」把它整个删了，schema validation 直接报 `'AutoUpdateMode' is a required property`。不能省，老老实实写上。
+
+## 坑 4：check apk —— extra signing block 'Dependency metadata'
+
+build 过了，APK 又被 scanner 拦下：`Found extra signing block 'Dependency metadata'`。
+
+这不是 Aptabase 之类的第三方库（那个标了 AntiFeature 就行），而是 **AGP 默认在 release APK 里塞的「依赖元数据」签名块**——给 Google Play Console 做依赖洞察用的。F-Droid 不接受 APK 里有这个额外的签名块。
+
+修复一行：
+
+```kotlin
+dependenciesInfo {
+    includeInApk = false    // F-Droid 用 APK，不能有这个块
+    includeInBundle = true  // AAB 保留，Play 那边的依赖洞察照常
+}
+```
+
+## 坑 5：自动更新——动态 versionCode 用不了标准的 Tags 模式
+
+让 F-Droid 自动发现新版本，最标准的做法是 `UpdateCheckMode: Tags` + `UpdateCheckData` 从 build.gradle **用正则静态读** versionCode/versionName。很多 app 都这么写：
+
+```yaml
+UpdateCheckData: app/build.gradle.kts|versionCode = (\d+)|.|versionName = "([\d.]+)"
+```
+
+但这要求 build.gradle 里有**字面的** `versionCode = 数字`。我们偏偏是从 git tag 动态推导的（坑 1 的结果），build.gradle 里压根没有字面数字，正则读出来是空——`checkupdates` 直接报 `version=None`。
+
+maintainer 给了思路：**发布一个含版本信息的文件到 GitHub Release，用 `UpdateCheckMode: HTTP` 抓它**。于是让 CI 发版时生成一个小文件传上 Release，F-Droid 从 `releases/latest/download/...` 这个稳定 URL 读版本号。既保住了 tag 推导，又能自动更新。
+
+## 坑 6：rewritemeta 的格式洁癖
+
+最磨人的一个，反复打回好几轮。`fdroid rewritemeta` 会检查你的 yml 是否**等于它用 ruamel.yaml dump 出来的规范格式**，差一个字符都不过。我那行长长的 `UpdateCheckData` 就是过不去：
+
+1. 先要求把超长的值**换行缩进**（单行太长）；我换了，还不过；
+2. 我一开始用的是 `version.json`，正则里带 JSON 的双引号（`"versionCode":\s*(\d+)`）。ruamel 折叠这种**含引号的超长无空格值**时格式很诡异，我怎么调换行和缩进都对不上；
+3. 最后去 fdroiddata 仓库里扒了一个机制完全相同（HTTP UpdateCheck + 发布 version 文件）的已上架 app，对着它的 yml 逐字节比，才找到关键：
+
+```yaml
+# 1) 值改用纯文本 version_code.txt，正则无引号
+# 2) UpdateCheckData: 冒号后留一个【尾随空格】再换行
+# 3) 值缩进 2 空格
+UpdateCheckData: 
+  https://github.com/.../releases/latest/download/version_code.txt|versionCode=(\d+)|.|versionName=([\d.]+)
+```
+
+那个**冒号后的尾随空格**是 ruamel dump 的产物，少了就判不一致。纯文本无引号则彻底绕开了 JSON 引号的折叠问题。改完，rewritemeta 终于绿了。
+
+## 其他几个值得记的小点
+
+- **commit 用完整 hash，不用 tag**：maintainer 明确要求。tag 可以被移动，commit hash 不可变、可复现，对「从源码自建」是硬要求。
+- **HTTP 模式的 AutoUpdateMode 要带 pattern**：`AutoUpdateMode: Version %v`——告诉 F-Droid 新版本号对应哪个 git tag（Tags 模式天然知道，HTTP 模式得显式给，否则 lint 报 `must have a pattern`）。
+- **AntiFeatures 如实标，别藏**：用了匿名统计就标 `Tracking`，依赖闭源后端就标 `NonFreeNet`。我一度想不标 NonFreeNet，但查了个情况几乎一样的已上架 app，人家标了——主动标更诚实，也过审更顺。
+- **job 日志在你的 fork 里，API 拿不到**：MR 的 pipeline 实际跑在你 fork 的仓库，job trace 用 GitLab API 拉会 401，得在已登录的浏览器里看。
+- **最快的办法是抄已上架的同类 app**：F-Droid 文档对这些边角格式（UpdateCheckData 折叠、AutoUpdateMode pattern、签名块）几乎没讲清，但 `fdroiddata/metadata/` 里有几万个真实、已通过审核的例子。撞墙时去找一个机制相同的 app 扒它的配置，比对着文档猜快太多。
+
+## 最后
+
+回头看，F-Droid 上架真正难的不是「写一个 yml」，而是它**从源码自建 + 严格 CI** 的模式，会把你工程里所有「只在自己 CI 里才成立的假设」全部暴露出来：版本号从哪来、签名谁来签、APK 里有没有夹带私货。每一条都要用一次完整的「发 tag → 远程 CI → 看日志」来验证，反馈环长得让人想念本地编译。
+
+如果你也要上架，两个经验：先发一个版本让 CI 把所有问题**一次性暴露**出来（而不是猜一个改一个）；然后照 fdroiddata 里机制相同的已上架 app **逐条抄格式**——比对着文档猜快十倍。
