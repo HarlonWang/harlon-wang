@@ -1,9 +1,9 @@
 ---
-title: 把 KMP 库发上 Maven Central：从手动首发到 push tag 自动发版
+title: 把 KMP 库发上 Maven Central：从零到 push tag 自动发版的完整流程
 type: original
 authorship: ai-led
 publishDate: 2026-06-04
-description: kmp-webview 0.1.0 的完整发版实录：Central Portal + vanniktech 插件的发布链路，以及自动化改造中撞到的四个文档里查不到的坑。
+description: kmp-webview 0.1.0 的完整发版流程拆解——前置准备、配置发布插件、本地手动首发、自动化 workflow 四个阶段，每一步给出具体操作、验证方法，以及实测撞过的坑。
 tags:
   - Kotlin Multiplatform
   - Maven Central
@@ -12,11 +12,19 @@ tags:
   - CI/CD
 ---
 
-这周把 [kmp-webview](https://github.com/HarlonWang/kmp-webview)（一个 Android + iOS 的 KMP WebView SDK）的 0.1.0 首版发上了 Maven Central，并在同一天把发版流程完全自动化：现在 `git tag 0.1.1 && git push origin 0.1.1` 一条命令就是一次完整发版。
+这周把 [kmp-webview](https://github.com/HarlonWang/kmp-webview)（一个 Android + iOS 的 KMP WebView SDK）的 0.1.0 首版发上了 Maven Central，并在同一天把发版流程完全自动化。最终的状态是：
 
-流程本身不复杂，但 KMP 库的发布有几个**只有实操才会撞到**的细节，文档里查不到或者很难查，记录如下。
+```bash
+git tag 0.1.1 && git push origin 0.1.1
+```
 
-## 整体链路
+约十几分钟后，Maven Central 上 5 个坐标可用，GitHub Release 带自动生成的变更说明，中间零人工操作。
+
+这篇按流程阶段拆解整个过程：**前置准备 → 配置发布插件 → 本地手动首发 → 自动化 workflow**。每个阶段给出要做什么、怎么验证做对了，以及我在这一步实际撞过的坑——KMP 库的发布有几个**只有实操才会撞到**的细节，文档里查不到或者很难查。如果你正带着某个报错搜到这里，文末有坑速查表。
+
+## 全局：发版链路与技术选型
+
+自动化之后的完整链路：
 
 ```
 git tag 0.1.1 + push
@@ -30,15 +38,27 @@ repo1.maven.org 同步（实测约 4 分钟可用）
 gh release create --generate-notes（自动生成 GitHub Release）
 ```
 
-技术选型：
+三个绕不开的选型结论：
 
-- **发布插件**：[vanniktech/gradle-maven-publish-plugin](https://github.com/vanniktech/gradle-maven-publish-plugin) 0.36.0。必选项而非可选项——Sonatype 新项目都走 Central Portal，其上传是专有 REST API，Gradle 自带的 `maven-publish` 根本不支持，这个插件把 Portal 协议、KMP 多 target 发布、签名全包了
+- **发布插件用 [vanniktech/gradle-maven-publish-plugin](https://github.com/vanniktech/gradle-maven-publish-plugin)**（我用 0.36.0）。必选项而非可选项——Sonatype 新项目都走 Central Portal，其上传是专有 REST API，Gradle 自带的 `maven-publish` 根本不支持，这个插件把 Portal 协议、KMP 多 target 发布、签名全包了
 - **一个 KMP 库 = 5 个 Maven 坐标**：root（`kmp-webview`）+ 平台产物（`-android`/`-iosarm64`/`-iossimulatorarm64`）+ 独立的纯 Android 扩展模块（`-scanner`）。业务方只依赖 root，Gradle 元数据自动解析平台产物
-- **CI runner 必须 macOS**：library 含 `iosArm64()`/`iosSimulatorArm64()`，Kotlin/Native 的 Apple target 只能在 macOS 编译。参考别的纯 Android 库照搬 ubuntu workflow 会直接编译失败
+- **发版 CI runner 必须 macOS**：library 含 `iosArm64()`/`iosSimulatorArm64()`，Kotlin/Native 的 Apple target 只能在 macOS 编译。参考别的纯 Android 库照搬 ubuntu workflow 会直接编译失败
 
-首版建议先在本地手动走一遍（`publishToMavenLocal` 验证签名产物 → 上传 → Portal 网页确认 VALIDATED → 手动点 Publish），把链路验证通了再自动化——发版 workflow 无法演习，触发即真发。
+## 阶段〇：前置准备
 
-## 坑 1：硬编码 version 会让 CI 的版本号注入静默失效
+发第一个包之前，三件一次性的事要先办好：
+
+1. **Central Portal 账号 + namespace 认证**。在 [central.sonatype.com](https://central.sonatype.com) 注册，然后认证你的 groupId 对应的 namespace：自有域名（如 `wang.harlon`）走 DNS TXT 记录验证；没有域名可以用 `io.github.<用户名>`，走 GitHub 仓库验证。没认证过的 namespace 无法发布。
+2. **生成 GPG 密钥并上传公钥**。Central 强制要求所有构件 GPG 签名，公钥要上传到公开 keyserver（如 `keyserver.ubuntu.com`），校验时会去查。私钥导出为 armored 文本，后面 CI 要用。
+3. **生成 Portal 发布 token**。Portal 网页上生成 username/password 形式的 token，这是上传 deployment 的凭证。
+
+凭证管理的做法：GPG 私钥（base64 后的 armored 文本）、passphrase、Sonatype token 集中存一个私有 repo，配 CI secret 时用 `gh api ... | gh secret set` 管道直传，全程不落盘不回显。
+
+## 阶段一：配置发布插件
+
+这一阶段的目标：让 `build.gradle.kts` 里的发布配置在三种环境（本地日常构建、本地验证发布、CI 发版）下都行为正确。两个坑都埋在这里。
+
+### 1. 版本号只留一个来源：git tag
 
 tag 驱动发版的常见写法，是 CI 里把 tag 名注入为版本号：
 
@@ -63,9 +83,9 @@ mavenPublishing {
 }
 ```
 
-本地日常构建 version 是 `unspecified`——无所谓，build/test/sample 运行走项目依赖不看版本号；需要本地验证发布配置时临时传 `-PVERSION_NAME=0.0.0-local` 即可。版本号的唯一来源就是 tag，不存在"忘了改版本号"或"tag 和版本不一致"这两种事故。
+本地日常构建 version 是 `unspecified`——无所谓，build/test/sample 运行走项目依赖不看版本号；需要本地验证发布配置时临时传 `-PVERSION_NAME=0.0.0-local` 即可。版本号的唯一来源就是 tag，不存在「忘了改版本号」或「tag 和版本不一致」这两种事故。
 
-## 坑 2：signAllPublications() 在本地无密钥时必失败，且开关属性不生效
+### 2. 签名按密钥是否存在条件启用
 
 发 Central 必须 GPG 签名，于是 build 脚本里加：
 
@@ -94,15 +114,53 @@ if (providers.gradleProperty("signingInMemoryKey").isPresent) {
 }
 ```
 
-CI 通过 `ORG_GRADLE_PROJECT_signingInMemoryKey` 环境变量注入私钥（Gradle 自动映射为同名 property）→ 签名启用；本地没有这个 property → 跳过签名，`publishToMavenLocal` 畅通。顺带消除了"本地误发未签名包"的可能性。注意用 `providers.gradleProperty()` 而不是 `findProperty()`，前者是配置缓存兼容的写法。
+CI 通过 `ORG_GRADLE_PROJECT_signingInMemoryKey` 环境变量注入私钥（Gradle 自动映射为同名 property）→ 签名启用；本地没有这个 property → 跳过签名，`publishToMavenLocal` 畅通。顺带消除了「本地误发未签名包」的可能性。注意用 `providers.gradleProperty()` 而不是 `findProperty()`，前者是配置缓存兼容的写法。
 
-担心"CI secret 配漏了会不会发出未签名包"？不会：Central Portal 校验会拒绝未签名构件，这条线有双保险。
+担心「CI secret 配漏了会不会发出未签名包」？不会：Central Portal 校验会拒绝未签名构件，这条线有双保险。
 
-## 坑 3：新版 AGP KMP 插件没有默认的 Android 单测任务
+### ✅ 本阶段验证：publishToMavenLocal
 
-想给 PR 配常规 CI（ubuntu 跑单测），照经典 AGP 的习惯写 `:library:testDebugUnitTest`，报错任务不存在。
+跑 `./gradlew publishToMavenLocal -PVERSION_NAME=0.0.0-local`，检查 `~/.m2/repository` 下 5 个坐标的产物齐全、POM 内容正确。有密钥的环境下再带上签名 property 跑一遍，确认 `.asc` 签名文件生成。
 
-原因：library 用的是新版 AGP KMP 插件（`com.android.kotlin.multiplatform.library`），它**默认不创建** Android host 单测任务——commonTest 里的测试只能跑 iOS 模拟器（这又回到了"必须 macOS"）。需要显式启用：
+## 阶段二：本地手动首发
+
+**首版强烈建议先在本地手动走一遍完整链路，验证通了再自动化**——发版 workflow 无法演习，触发即真发。
+
+手动首发的步骤：本地执行发布任务上传 → Portal 网页确认 deployment 状态变为 **VALIDATED**（9 个组件全部通过校验）→ 手动点 Publish → 等 repo1.maven.org 同步后用一个空项目拉依赖验证。
+
+这一遍走通，意味着 namespace、GPG 签名、POM 元数据、产物完整性全部被 Portal 校验过——之后自动化 workflow 里唯一的新变量就只剩「版本号从 tag 来」这一件事，出问题的排查面会小很多。
+
+同步速度的实测数据：Portal 点完 publish（或自动 release）后，repo1.maven.org 约 4 分钟可拉取；search.maven.org 的搜索索引会慢几小时，但不影响依赖解析。
+
+## 阶段三：自动化 workflow
+
+这一阶段的目标：把手动验证过的链路搬进 GitHub Actions，让 push tag 成为唯一的发版动作。
+
+### tag 触发条件：不是正则，也不是普通 glob
+
+发版 workflow 的触发条件想限定「长得像版本号的 tag」：
+
+```yaml
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+*'
+```
+
+这串写法乍看像正则，但 GitHub filter pattern 其实是它自家的 glob 方言：`+` 表示「前一个字符一个或多个」，`[0-9]` 字符类合法，`.` 是字面量。实测匹配结果：`1.2.3` ✅、`0.1.10` ✅、`1.2.3-rc1` ✅（尾部 `*` 吸收后缀）、`v1.0.0` ❌、`0.1` ❌——正好是想要的语义。误打的非版本 tag（比如 `test`）不会触发发版。
+
+### workflow 里几个值得抄的细节
+
+- **`gradle-build-action` 已弃用**，用 `gradle/actions/setup-gradle@v4`，默认带依赖缓存和 wrapper 校验
+- **发版 job 记得加 `timeout-minutes`**：`publishAndReleaseToMavenCentral` 会轮询 Portal 等校验结果，万一 Portal 卡住，默认上限是 6 小时——macOS runner 还是 10x 计费
+- **发布命令显式加 `--no-configuration-cache`**：发布任务和配置缓存的兼容性不完整，日常构建不受影响
+- **GitHub Release 放在 Maven 发布步骤之后**：发布失败就不会产生孤儿 Release，顺序即保障；`gh release create --generate-notes` 自动汇总两个 tag 之间的 PR/commit，零维护成本
+
+## 支线：给 PR 配日常 CI 单测
+
+这条和发版正交，但发库总要配 PR 检查。想在 ubuntu 上跑单测，照经典 AGP 的习惯写 `:library:testDebugUnitTest`，报错任务不存在。
+
+原因：library 用的是新版 AGP KMP 插件（`com.android.kotlin.multiplatform.library`），它**默认不创建** Android host 单测任务——commonTest 里的测试只能跑 iOS 模拟器（这又回到了「必须 macOS」）。需要显式启用：
 
 ```kotlin
 kotlin {
@@ -112,36 +170,27 @@ kotlin {
 }
 ```
 
-启用后 61 个 commonTest 用例在 JVM host 上直接跑，ubuntu CI 就能覆盖到了。另外实测确认：KMP 的 Apple target 在 ubuntu 上**配置阶段没问题**（target 注册、XCFramework DSL 都是纯配置），只是不能执行编译任务——所以 ubuntu CI 跑 Android 任务完全可行，不必为每个 PR 烧 macOS 时长。
+启用后 61 个 commonTest 用例在 JVM host 上直接跑。另外实测确认：KMP 的 Apple target 在 ubuntu 上**配置阶段没问题**（target 注册、XCFramework DSL 都是纯配置），只是不能执行编译任务——所以 ubuntu CI 跑 Android 任务完全可行，不必为每个 PR 烧 macOS 时长。
 
-## 坑 4：GitHub Actions 的 tag pattern 不是正则，但也不是普通 glob
+## 发版前 Checklist
 
-发版 workflow 的触发条件想限定"长得像版本号的 tag"：
+- [ ] Portal namespace 已认证，GPG 公钥已上传 keyserver，发布 token 已生成
+- [ ] build 脚本里没有任何字面 `version =` 赋值，版本号唯一来源是 tag
+- [ ] 签名按 `signingInMemoryKey` property 条件启用，本地 `publishToMavenLocal` 无密钥可跑通
+- [ ] 首版已本地手动发布并在 Portal 看到 VALIDATED
+- [ ] workflow 的 tag pattern 实测过匹配范围（排除 `v` 前缀和两段版本号）
+- [ ] 发版 job 配了 `timeout-minutes`，发布命令带 `--no-configuration-cache`
+- [ ] GitHub Release 步骤在 Maven 发布之后
 
-```yaml
-on:
-  push:
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+*'
-```
+## 坑速查表
 
-这串写法乍看像正则，但 GitHub filter pattern 其实是它自家的 glob 方言：`+` 表示"前一个字符一个或多个"，`[0-9]` 字符类合法，`.` 是字面量。实测匹配结果：`1.2.3` ✅、`0.1.10` ✅、`1.2.3-rc1` ✅（尾部 `*` 吸收后缀）、`v1.0.0` ❌、`0.1` ❌——正好是想要的语义。误打的非版本 tag（比如 `test`）不会触发发版。
+| 症状 | 根因 | 修复 | 章节 |
+|---|---|---|---|
+| 打了新 tag，发出去还是旧版本号 | build 脚本里的字面 `version =` 优先级高于 CI 注入的 property | 删掉显式赋值，版本号只从 tag 来 | 阶段一·1 |
+| 本地 `publishToMavenLocal` 报 `no configured signatory` | `signAllPublications()` 在无密钥环境必失败，`RELEASE_SIGNING_ENABLED=false` 不生效 | 按密钥 property 是否存在条件启用签名 | 阶段一·2 |
+| `:library:testDebugUnitTest` 任务不存在 | 新版 AGP KMP 插件默认不创建 Android host 单测任务 | `withHostTestBuilder {}` | 支线 |
+| tag 推上去 workflow 没触发 / 误触发 | GitHub tag filter 是自家 glob 方言，不是正则 | `'[0-9]+.[0-9]+.[0-9]+*'`，实测匹配范围 | 阶段三 |
 
-## 其他几个值得记的小点
+## 最后
 
-- **`gradle-build-action` 已弃用**，新 workflow 用 `gradle/actions/setup-gradle@v4`，默认带依赖缓存和 wrapper 校验
-- **发版 job 记得加 `timeout-minutes`**：`publishAndReleaseToMavenCentral` 会轮询 Portal 等校验结果，万一 Portal 卡住，默认上限是 6 小时——macOS runner 还是 10x 计费
-- **`--no-configuration-cache`**：发布任务和配置缓存的兼容性不完整，发版命令显式关掉，日常构建不受影响
-- **凭证管理**：GPG 私钥（base64 后的 armored 文本）、passphrase、Sonatype token 集中存一个私有 repo，配 CI secret 时用 `gh api ... | gh secret set` 管道直传，全程不落盘不回显
-- **GitHub Release 放在发布步骤之后**：Maven 发布失败就不会产生孤儿 Release，顺序即保障；`--generate-notes` 自动汇总两个 tag 之间的 PR/commit，零维护成本
-- **同步速度**：Portal 点完 publish（或自动 release）后，repo1.maven.org 实测约 4 分钟可拉取，search.maven.org 的搜索索引会慢几小时，不影响依赖解析
-
-## 最终的发版体验
-
-```bash
-git tag 0.1.1 && git push origin 0.1.1
-```
-
-约十几分钟后：Maven Central 上 5 个坐标可用，GitHub Release 带自动生成的变更说明。中间零人工操作。
-
-回头看，这套链路里真正花时间的不是写 workflow（30 行 YAML），而是把"版本号从哪来、签名什么时候启用、测试在哪个 runner 跑"这三件事的边界想清楚——它们各自都有一个文档查不到的坑等着。希望这篇能帮你绕过去。
+回头看，这套链路里真正花时间的不是写 workflow（30 行 YAML），而是把「版本号从哪来、签名什么时候启用、测试在哪个 runner 跑」这三件事的边界想清楚——它们各自都有一个文档查不到的坑等着。先手动走通一遍、再让 tag 接管一切，是绕过这些坑成本最低的路径。
