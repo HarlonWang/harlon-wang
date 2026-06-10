@@ -14,7 +14,6 @@ const posts = (await getCollection('posts')).sort(
     <button type="button" class="post-filter-btn is-active" data-filter="all" aria-pressed="true">全部</button>
     <button type="button" class="post-filter-btn" data-filter="translation" aria-pressed="false">🌐 译（翻译稿）</button>
     <button type="button" class="post-filter-btn" data-filter="ai-led" aria-pressed="false">🤖 AI 写（主笔）</button>
-    <button type="button" class="post-filter-btn" data-filter="co-authored" aria-pressed="false">🤝 协作（五五开）</button>
     <button type="button" class="post-filter-btn" data-filter="human-led" aria-pressed="false">✍️ 我写（主笔）</button>
   </div>
   <section id="post-list">

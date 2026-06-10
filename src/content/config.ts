@@ -7,7 +7,7 @@ const posts = defineCollection({
     .object({
       title: z.string(),
       type: z.enum(['translation', 'original']),
-      authorship: z.enum(['ai-led', 'co-authored', 'human-led']).optional(),
+      authorship: z.enum(['ai-led', 'human-led']).optional(),
       publishDate: z.coerce.date(),
       description: z.string(),
       tags: z.array(z.string()).default([]),

@@ -6,8 +6,6 @@ export function getPostBadge(entry: CollectionEntry<'posts'>): string {
     switch (data.authorship) {
         case 'ai-led':
             return '🤖';
-        case 'co-authored':
-            return '🤝';
         case 'human-led':
         default:
             return '✍️';
