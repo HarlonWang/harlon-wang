@@ -1,0 +1,104 @@
+---
+title: 本周 F-Droid（2026-06-12）：不是我们选的这些柔和色
+type: translation
+publishDate: 2026-06-12
+description: F-Droid 第 24 周社区周报。核心进展是 F-Droid 2.0 已到 alpha10、临近正式发布并征集测试；社区新闻控诉 Google 把 baresip、Syncthing-Fork 等正常开源应用误判为恶意软件，并呼吁关注 Android 开放性。
+tags:
+  - F-Droid
+  - TWIF
+  - Android
+  - FLOSS
+  - 开源
+source:
+  title: We didn't choose the pastel colors
+  url: https://f-droid.org/en/2026/06/12/twif.html
+  author: linsui
+  siteName: F-Droid
+  publishDate: 2026-06-12
+translator: Harlon Wang
+---
+
+> TWIF（This Week in F-Droid）是 F-Droid 每周发布的社区动态周报。本期整理于 2026 年 6 月 12 日星期五，第 24 周。标题「不是我们选的这些柔和色」是在调侃新版采用的 Material You / Material 3 动态配色。
+
+## 本期看点
+
+核心进展是 **F-Droid 2.0 已到 alpha10、临近正式发布**，并呼吁用户帮忙测试；社区新闻里有一段较强的立场——**控诉 Google 把 baresip、Syncthing-Fork 等正常开源应用误判为恶意软件**，并呼吁关注 keepandroidopen.org 维护 Android 的开放性。
+
+## F-Droid 核心
+
+**F-Droid 和 F-Droid Basic** 更新至 2.0-alpha10。F-Droid 在 Mastodon 上发了一条嘟文，距离正式发布只差**一英寸（公制的话是 25.4 毫米）**了，欢迎今天就在你的设备上测试一下：
+
+- 折腾一下 Material 配色，所有界面看起来都正常、可读吗？
+- 安装一些应用和更新，它们能从镜像快速下载吗？
+- 你的国产设备能正常装应用，还是会随机放弃？
+- 在智能电视上界面好看吗，会不会很难操作？
+- 应用翻译完整吗，还是有些字符串需要再打磨？
+- 元分类（meta categories）看起来吸引人吗？
+- 还有其他该知道的问题吗？
+
+读完上面想帮忙？进入 F-Droid 或 Basic 应用详情页，在右上角三点菜单里勾选「允许测试版更新（Allow beta updates）」，即可获取最新的 2.0-alpha。
+
+## 社区新闻
+
+- **baresip** 更新至 83.1.0，其支持视频的版本 **baresip+** 更新至 72.1.0。这两个应用分别从 2018 年和 2020 年就在 F-Droid 上了，对 Android 生态以及 Google 那套窥探用户装了哪些应用的庞大监控系统而言并不「新」。然而它们的安装包被当成恶意软件，用户和开发者都因此受到刁难。
+
+- 同样地，**Syncthing-Fork** 更新至 2.1.1.0，也遭到了 Google 那些「自称要保护用户」的、Rootkit 般的服务的 FUD（恐惧、不确定、怀疑）式对待。Google 是在保护你，还是在保护它的股东？时间紧迫，**keepandroidopen.org**（保持 Android 开放）上有一些可行动的建议。
+
+- **Fedilab** 更新至 3.41.0，新增「合集（Collections）」功能，具体可参阅 Mastodon 开发者的帖子。
+
+- **Flip 2 DND** 在跳过几个版本后更新至 12.1.1-free。开发者把签名密钥弄丢了/忘了/烧了/删了，或者就是单纯换了个新密钥，所以它现在用的是新密钥。上周装过这个应用？最好卸载后重新安装新版。
+
+- **Notifications for FB** 时隔……9 年！更新至 1.12.0。虽然 F-Droid 对使用这么一个糟糕、剥削用户的封闭围墙花园不太赞同，但至少现在你能以更好的方式收到通知了。
+
+- 两周前刚介绍过 **ReFra**，这次它凭借 5.0.0 更新值得再提一次：新增了 Immich 集成（很快还会支持 ownCloud），让你可以像浏览本地一样浏览远程内容，还有云端照片备份、备份向导、更多编辑器特效与滤镜、按日期分组、相册分区、动态照片转 MP4、Android 高级保护（Advanced Protection）支持、更详细的位置信息、更好的 APNG 与 JXL 支持、更多性能优化等等。
+
+## 新增分类
+
+新增 3 个分类：
+
+- **Recorder（录音录制）**：录音机、录屏、通话录音
+- **Camera（相机）**：相机、IP 摄像头查看器与视频录制
+- **Market & Price（市场与价格）**：价格、汇率、股票
+
+## 新增应用
+
+新增 34 个应用：
+
+- **Alchemist**：从四种基本元素开始，创造万物！
+- **AppVerifier BG**：根据共享的签名哈希和数据库验证已安装应用
+- **Conduit**：移动端本地优先的 SSH、Mosh 和 SFTP 工具
+- **drejo player**：小巧无广告的播放器，可在 mp4 + mkv 文件夹间可靠地上一首/下一首
+- **Email**：带统一收件箱的现代邮件客户端
+- **Ensemble**：Music Assistant 的非官方客户端
+- **Entropy's Defiance**：极简启动器与时间跨度任务管理器
+- **Epoch**：极客向时间显示：Unix、恒星时、二进制时钟等
+- **Flac-R**：完善你的收藏（音乐应用）
+- **Health**：旨在替代 Google Fit 的健康指标管理应用
+- **Hermes Agent Fork**：运行本地 AI 模型，支持聊天、文件、语音和 Android 工具
+- **Hisap Kitap**：面向小企业的店铺账本与开票应用
+- **Kochi Transit Go**：离线的科钦地铁路线规划与票价计算器，快速、免费、私密
+- **LineShield**：在墨西哥 CRT 门户上核查以你名义登记的电话号码
+- **Linthra**：面向你自有音乐的本地优先播放器，不强制同步
+- **LocalTube**：基于 NewPipe Extractor 构建的自托管流媒体服务器方案
+- **Metiq**：用于专注、睡眠和放松的彩色噪音，无广告、无追踪
+- **Motivational App**：一个小笑话应用，一键给你简单粗暴的激励
+- **ONVIF Camera**：面向 IP 摄像头的简易 RTSP 查看器
+- **Open Hitomi**：浮动刺猬助手，带本地聊天和浏览器工具
+- **OpenVitals**：私密的 Health Connect 摘要；不构成医疗建议
+- **OW Camera 2 For Pebble**：用你的 Pebble 智能手表远程控制手机相机
+- **Passchain**：通过蓝牙、NFC、USB 或手机安全芯片使用安全密钥
+- **PDF Inspector**：检查、选择、编辑和删除任意 PDF 内部的元素
+- **Phylax**：Frigate NVR 查看器，支持智能 URL 切换和通知
+- **PicCollage**：高性能照片拼贴工作室，含 26 种动态渐变和专业版式
+- **Pictionary Generator**：类似「你画我猜」的词语生成器
+- **PixelPlayerOSS**：面向离线和自托管曲库的本地优先音乐播放器
+- **Prog Metronome**：用于练习复杂节奏构想的节拍器
+- **RealmScore**：Fantasy Realms 卡牌游戏的计分器
+- **Rocinante**：BookWyrm 文学社交网络的快速、私密、原生客户端
+- **SoundTree Recorder**：带主题整理、标记和翻页式波形的录音机
+- **time-tracking**：精确轻松地记录你的工作时长
+- **whatIwatch**：追踪你正在追的剧集
+
+## 已更新应用
+
+另有 288 个应用已更新。
