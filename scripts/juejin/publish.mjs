@@ -32,9 +32,16 @@ async function apiCall(config, endpoint, body) {
         },
         body: JSON.stringify(body),
     });
-    const data = await resp.json();
-    if (data.err_no !== 0) {
-        throw new Error(`掘金 API ${endpoint} 失败：${data.err_no} - ${data.err_msg}`);
+    const text = await resp.text();
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch {
+        // 限流/网关错误时掘金可能返回 HTML，直接 resp.json() 会抛出难懂的解析错误。
+        throw new Error(`掘金 API ${endpoint} 返回非 JSON（HTTP ${resp.status}）：${text.slice(0, 200)}`);
+    }
+    if (!resp.ok || data.err_no !== 0) {
+        throw new Error(`掘金 API ${endpoint} 失败：HTTP ${resp.status} err_no=${data.err_no} ${data.err_msg ?? ''}`.trim());
     }
     return data.data;
 }

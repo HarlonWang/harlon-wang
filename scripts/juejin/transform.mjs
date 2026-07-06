@@ -11,7 +11,12 @@ export function parsePost(raw) {
     if (!match) {
         return { frontmatter: {}, body: raw.trim() };
     }
-    const frontmatter = parseYaml(match[1]) ?? {};
+    let frontmatter;
+    try {
+        frontmatter = parseYaml(match[1]) ?? {};
+    } catch (err) {
+        throw new Error(`frontmatter YAML 解析失败：${err.message}`);
+    }
     const body = raw.slice(match[0].length).trim();
     return { frontmatter, body };
 }

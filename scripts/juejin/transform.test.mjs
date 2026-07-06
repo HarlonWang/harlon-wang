@@ -26,6 +26,11 @@ test('parsePost 无 frontmatter 时返回空对象与原文', () => {
     assert.equal(body, '纯正文');
 });
 
+test('parsePost frontmatter YAML 非法时抛清晰错误', () => {
+    const raw = '---\ntitle: "未闭合\n  bad: [1, 2\n---\n正文';
+    assert.throws(() => parsePost(raw), /frontmatter YAML 解析失败/);
+});
+
 test('hasMdxSyntax 命中 import / JSX 组件，放过纯 Markdown', () => {
     assert.equal(hasMdxSyntax('import X from "y"\n\n# 标题'), true);
     assert.equal(hasMdxSyntax('# 标题\n\n<Callout>hi</Callout>'), true);

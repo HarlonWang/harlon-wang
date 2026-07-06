@@ -86,7 +86,8 @@ async function main() {
         try {
             results.push(await syncOne(s, { force }, ledger));
         } catch (err) {
-            results.push({ slug: s, status: 'error', reason: err.message });
+            const reason = err instanceof Error ? err.message : String(err);
+            results.push({ slug: s, status: 'error', reason });
         }
     }
 
