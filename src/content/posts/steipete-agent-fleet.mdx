@@ -14,17 +14,7 @@ tags:
 
 > 一个人，过去一年在 GitHub 上留下 **171,946 次贡献**，单日最高 **921 个 commit**（约每 94 秒一次），一天 24 小时几乎没有作息波谷。这不是超人，也不是刷数据——是「一个人 + AI agent 车队」这种新开发范式在贡献图上的投影。本文用直接查 GitHub API 得到的硬数据，配上他自己开源的 OpenClaw 仓库里的真实工程机制，把这套模式拆开看清楚。
 
-主角是 **Peter Steinberger**（GitHub ID [steipete](https://github.com/steipete)），PSPDFKit 创始人，退休后「回来折腾 AI」。下面所有以「实测」标注的数字，都是我在 2026 年 7 月直接用 GitHub API 和 bare clone 统计出来的，不是二手引用；凡是来自采访和报道的说法，我都会明确标注来源，请自行判断可信度。
-
-## 先坐实一件事：OpenClaw 到底是不是他的
-
-这篇文章的可信度地基，是「他确实主导着一个真实存在、有巨量真实活动的项目」。我核对了三个独立角度：
-
-- **仓库的第一个 commit 就是他**。`openclaw/openclaw` 仓库的 "Initial commit"（2025-11-24）作者是 `Peter Steinberger <steipete@gmail.com>`，紧接着第二个 commit 是 "Add warelay CLI"——正好对上项目 `VISION.md` 里记载的改名史：**Warelay → Clawdbot → Moltbot → OpenClaw**。
-- **他的自我定位**。GitHub bio 写着 "Clawdfather @OpenClaw"（Clawdfather，教父/缔造者），他的 TED 演讲标题是 *"How I created OpenClaw"*。
-- **他是头号贡献者**。该仓库里他一个人 **32,548 个 commit**（实测），排第一。
-
-需要说清楚的一个**准确边界**：OpenClaw 起步时是他的个人实验项目，但如今早已不是「个人作品」——它是一个 star 数 **38 万+**（实测 381,845）、有大量外部贡献者（第二名 Vincent Koc 约 1 万 commit）的大型开源项目，openclaw 组织 2026-01-04 才成立，且据报道 2026 年 6 月他加入 OpenAI 后，项目已移交基金会独立运营，他的角色转为 steward（主理人）。所以准确的说法是：**他是 OpenClaw 的原始创造者与长期主导者（BDFL），项目由他个人起步、后成长为基金会托管的协作项目**。
+主角是 **Peter Steinberger**（GitHub ID [steipete](https://github.com/steipete)），开源 AI 助手（小龙虾）**OpenClaw 的作者与长期主导者（BDFL）**——本文引用的工程机制大多来自这个由他一手起步、如今已成长为基金会托管的大型开源项目。下面所有以「实测」标注的数字，都是我在 2026 年 7 月直接用 GitHub API 和 bare clone 统计出来的，不是二手引用；凡是来自采访和报道的说法，我都会明确标注来源，请自行判断可信度。
 
 ## 17 万次贡献的数字拆解
 
