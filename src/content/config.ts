@@ -23,6 +23,14 @@ const posts = defineCollection({
       translator: z.string().default('Harlon Wang'),
       // 是否展示评论区（含点赞/阅读量），默认开启；个别文章可设 false 关闭
       comments: z.boolean().default(true),
+      // 掘金同步开关：存在此对象即代表要同步到掘金（见 scripts/juejin-sync.mjs）
+      juejin: z
+        .object({
+          category: z.string(), // 掘金分类中文名，单选，见 scripts/juejin-taxonomy.json
+          tags: z.array(z.string()).min(1), // 掘金已有标签中文名
+          column: z.string().optional(), // 掘金专栏 ID，不填则不进专栏
+        })
+        .optional(),
     })
     .superRefine((data, ctx) => {
       if (data.type === 'translation' && !data.source) {
