@@ -26,6 +26,10 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
+    devDependencies:
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
 
 packages:
 
