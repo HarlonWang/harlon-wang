@@ -64,7 +64,9 @@ export async function publish(article, { dryRun = false } = {}) {
     });
 
     if (dryRun) {
-        return { draftId, published: false, url: `https://juejin.cn/editor/drafts/${draftId}` };
+        // 校验模式：管线（鉴权/转换/建草稿/填内容）都跑一遍，但不留草稿、不发布。
+        await apiCall(config, 'article_draft/delete', { draft_id: draftId });
+        return { draftId, published: false, cleaned: true };
     }
 
     const result = await apiCall(config, 'article/publish', {

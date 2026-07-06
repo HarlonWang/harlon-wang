@@ -4,7 +4,7 @@
 // 用法：
 //   node scripts/juejin-sync.mjs               同步所有已开启且未发过的文章
 //   node scripts/juejin-sync.mjs <slug>        只同步指定文章（文件名去掉 .mdx）
-//   node scripts/juejin-sync.mjs --dry-run     只建草稿不发布、不记账
+//   node scripts/juejin-sync.mjs --dry-run     试跑校验（建草稿→填内容→删除），不发布、不留草稿、不记账
 //   node scripts/juejin-sync.mjs <slug> --force  忽略「已发」记录强制重发
 //
 // 开启方式：在文章 frontmatter 加 juejin 对象（其存在即代表要同步）：
@@ -70,7 +70,7 @@ async function syncOne(slug, { dryRun, force }, ledger) {
         });
         return { slug, status: 'published', url: result.url };
     }
-    return { slug, status: 'dry-run', url: result.url };
+    return { slug, status: 'dry-run', reason: '管线校验通过，草稿已清理（未发布）' };
 }
 
 async function main() {
@@ -81,7 +81,7 @@ async function main() {
         // .env 不存在也行——环境变量可能已由外部注入
     }
 
-    console.log(`模式：${dryRun ? 'DRY RUN（只建草稿）' : '发布'}${force ? ' + FORCE' : ''}`);
+    console.log(`模式：${dryRun ? 'DRY RUN（校验，不留草稿）' : '发布'}${force ? ' + FORCE' : ''}`);
     const ledger = await readLedger();
     const slugs = await listSlugs(slug);
 
