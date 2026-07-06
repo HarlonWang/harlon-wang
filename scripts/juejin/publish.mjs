@@ -40,7 +40,7 @@ async function apiCall(config, endpoint, body) {
 }
 
 // article: { title, briefContent, markContent, wordCount, categoryId, tagIds, columnIds }
-export async function publish(article, { dryRun = false } = {}) {
+export async function publish(article) {
     const { title, briefContent, markContent, wordCount, categoryId, tagIds, columnIds = [] } = article;
     const config = getConfig();
 
@@ -62,12 +62,6 @@ export async function publish(article, { dryRun = false } = {}) {
         html_content: 'deprecated',
         mark_content: markContent,
     });
-
-    if (dryRun) {
-        // 校验模式：管线（鉴权/转换/建草稿/填内容）都跑一遍，但不留草稿、不发布。
-        await apiCall(config, 'article_draft/delete', { draft_id: draftId });
-        return { draftId, published: false, cleaned: true };
-    }
 
     const result = await apiCall(config, 'article/publish', {
         draft_id: draftId,
