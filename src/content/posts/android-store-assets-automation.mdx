@@ -1,0 +1,334 @@
+---
+title: 告别 Play Console 手动上传：从模拟器截图到自动发版的完整流水线
+type: original
+authorship: ai-led
+publishDate: 2026-08-09
+description: 把 Android 商店物料的生产和发布全部自动化——命令行给模拟器截图套官方设备外壳、录制官网演示视频、fastlane supply 同步商品详情、CI 自动发版到 Google Play，每一步给出操作、验证方法和实测撞过的坑。
+tags:
+  - Android
+  - Google Play
+  - fastlane
+  - CI/CD
+  - GitHub Actions
+  - 自动化
+juejin:
+  category: Android
+  tags:
+    - Android
+    - CI/CD
+    - GitHub
+---
+
+给 [TrendingAI](https://github.com/HarlonWang/TrendingAI) 做完一次整体 UI 改版后，商店截图、官网演示视频、Play 商品详情全都要跟着换一遍。以前这套流程的每一步都是手工活：在 Android Studio 的模拟器面板里一张张点「带外壳截图」，然后打开 Play Console 一张张拖进上传框。这次我把整条链路自动化了，最终的状态是：
+
+- **改版换截图**：跑一条命令，双语 12 张带官方外壳的商店图全部生成，push 到 main 后 CI 自动同步到 Play 商品详情——Play Console 一次都不用打开；
+- **发新版本**：打一个 git tag，CI 构建 AAB、生成发版说明、上传 production 轨道送审，过审自动上线。
+
+这篇按操作顺序拆解整条流水线：**准备截图环境 → 命令行套外壳 → 录演示视频 → 接入 fastlane supply → CI 挂两条链路**。每个阶段给出要做什么、怎么验证做对了，以及实测撞过的坑。其中「命令行给截图套官方设备外壳」这一步，网上几乎没有现成资料，是全文最值得带走的部分。文末照例有操作前 Checklist 和坑速查表。
+
+## 全局：流水线长什么样
+
+```
+UI 改版完成
+  ├─ 截图流水线：模拟器截图（demo mode 清状态栏）
+  │     → Pillow 套官方设备外壳 → TinyPNG 压缩
+  │     → 分发到 fastlane/metadata + README assets + 官网 OG 图
+  │
+  ├─ 视频流水线：scrcpy 录屏（慢手势）
+  │     → ffmpeg 压制 + 抽首帧 poster → 官网 <video> 自动循环播放
+  │
+  └─ Git 触发 CI（两条独立链路）
+        ├─ push 到 main 且 fastlane/metadata 有变更
+        │     → play_listing.yml 同步 Play 商品详情（文案 + 截图）
+        └─ 打正式版 tag
+              → android_release.yml 上传 AAB + 发版说明到 production 轨道
+```
+
+三条核心机制，理解了它们，后面每一步都是顺理成章：
+
+1. **设备外壳是本地素材 + 简单图层合成**。Android Studio「带外壳截图」用的素材就在它的安装目录里，每台设备三个文件（机身底图、屏幕遮罩、偏移量描述），用 Pillow 十行代码就能做出和 IDE 手动截图完全同规格的输出。
+2. **仓库里的 `fastlane/metadata` 是商品详情的唯一事实源**。fastlane 的这套目录结构（`title.txt`、`full_description.txt`、`images/phoneScreenshots/`……）同时被 F-Droid 和 Google Play 消费——F-Droid 直接从仓库读，Play 靠 `fastlane supply` 推送。文案和截图只在仓库改，改完自动同步，Play 后台从此只读。
+3. **发版和商店物料是两个生命周期**。版本随 tag 发布，截图文案偶尔才改。CI 也应该照这个现实拆成两条链路，而不是把 listing 同步塞进发版流程里做条件判断。
+
+## 一、准备干净的截图环境
+
+商店截图的状态栏必须干净统一：固定时钟、满电、满信号、无通知图标。五张图各有各的时间电量，是最容易被忽略的廉价感来源；对录屏来说更致命——循环播放的视频里状态栏时间跳一下，立刻穿帮。
+
+Android 的 demo mode 一组广播就能搞定（模拟器和多数真机通用）：
+
+```bash
+adb shell settings put global sysui_demo_allowed 1
+adb shell am broadcast -a com.android.systemui.demo -e command enter
+adb shell am broadcast -a com.android.systemui.demo -e command clock -e hhmm 0917
+adb shell am broadcast -a com.android.systemui.demo -e command battery -e level 100 -e plugged false
+adb shell am broadcast -a com.android.systemui.demo -e command network -e wifi show -e level 4 -e fully true
+adb shell am broadcast -a com.android.systemui.demo -e command network -e mobile hide
+adb shell am broadcast -a com.android.systemui.demo -e command notifications -e visible false
+adb shell am broadcast -a com.android.systemui.demo -e command status -e volume hide -e bluetooth hide
+adb shell svc power stayon true   # 顺手防熄屏
+```
+
+几个细节：
+
+- `network -e mobile hide` 别漏——模拟器默认会在状态栏挂一个「3G」图标，第一批截图出来才发现的话，全部重截；
+- 时钟随便定，我定成 09:17 是因为 TrendingAI 的每日精选在北京时间 9 点生成，算个彩蛋；
+- 双语截图不需要切系统语言。如果你的 App 有应用内语言设置（per-app language 或自研的都行），直接在 App 里切，省掉系统 locale 折腾和它带来的进程重启。
+
+✅ **验证**：截一张，确认状态栏只有「9:17 + WiFi + 满电」，没有时间流动、没有通知点、没有移动网络图标。
+
+> ⚠️ **坑：demo mode 只管状态栏，管不了 App 内的时间**。列表里的「3 分钟前」之类相对时间照样在走，同一批截图尽量一次截完，别隔天补。
+
+## 二、命令行给截图套官方设备外壳
+
+这是全文的核心。`adb exec-out screencap` 拿到的是裸屏幕图，而商店图要的是带手机边框、圆角、挖孔摄像头的效果。过去我的做法是在 Android Studio 的模拟器工具栏里手动点「带外壳截图」——它没有对应的命令行接口，于是双语 × 多场景 × 手机平板的矩阵全靠手点。
+
+其实 Android Studio 的外壳素材就躺在本机安装目录里：
+
+```
+/Applications/Android Studio.app/Contents/plugins/android/resources/device-art-resources/<设备名>/
+├── back.webp   # 机身底图（含边框、按键、阴影），比屏幕大一圈
+├── mask.webp   # 前景遮罩：屏幕区域透明，圆角边缘和挖孔摄像头不透明
+└── layout      # 文本描述文件：屏幕分辨率、在机身上的偏移量、成品尺寸
+```
+
+以 `pixel_9` 为例，`layout` 里写着：屏幕 1080×2424，贴在机身的 (55, 58) 位置，成品 1198×2531。合成算法就三步：
+
+```
+back.webp 打底 → 裸截图按偏移量方形贴入 → mask.webp 前景叠加（盖出圆角和摄像头）
+```
+
+完整脚本（Pillow 实现，支持手机和平板）：
+
+```python
+#!/usr/bin/env python3
+"""给模拟器裸截图套 Android Studio 官方设备外壳。"""
+import argparse
+from pathlib import Path
+from PIL import Image
+
+ART_ROOT = Path(
+    "/Applications/Android Studio.app/Contents/plugins/android/resources/device-art-resources"
+)
+
+# 屏幕分辨率与偏移量取自各设备 device-art 的 layout 描述文件
+DEVICES = {
+    "pixel_9": {"screen": (1080, 2424), "offset": (55, 58)},
+    "pixel_tablet": {"screen": (2560, 1600), "offset": (119, 117)},
+}
+
+def frame(shot_path: Path, device: str, out_dir: Path) -> Path:
+    spec = DEVICES[device]
+    art = ART_ROOT / device
+    shot = Image.open(shot_path).convert("RGBA")
+    if shot.size != spec["screen"]:
+        raise SystemExit(f"{shot_path.name}: 分辨率 {shot.size} 与 {device} 不符")
+    back = Image.open(art / "back.webp").convert("RGBA")
+    mask = Image.open(art / "mask.webp").convert("RGBA")
+    back.paste(shot, spec["offset"])          # 方形贴入
+    back.alpha_composite(mask, spec["offset"])  # 前景盖出圆角 + 挖孔
+    out = out_dir / shot_path.name
+    back.save(out)
+    return out
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("shots", nargs="+", type=Path)
+    ap.add_argument("-d", "--device", choices=DEVICES, default="pixel_9")
+    ap.add_argument("-o", "--out", type=Path, default=Path("framed"))
+    args = ap.parse_args()
+    args.out.mkdir(parents=True, exist_ok=True)
+    for shot in args.shots:
+        print("framed:", frame(shot, args.device, args.out))
+
+if __name__ == "__main__":
+    main()
+```
+
+配合 adb 驱动导航（`input tap` / `input swipe` 走到目标页面再 `screencap`），整个截图矩阵就是一个 shell 循环的事。
+
+✅ **验证**：输出尺寸应与 Android Studio 手动「带外壳截图」完全一致（pixel_9 → 1198×2531，pixel_tablet → 2798×1837）。如果你以前手动截过，新旧文件分辨率对得上就说明套壳无损。
+
+> ⚠️ **坑：`mask.webp` 是前景遮罩，不是抠图蒙版**。我第一版把它的 alpha 当作截图的粘贴蒙版用（`paste(shot, offset, mask_alpha)`），结果四角冒出白色方块、挖孔位置露出灰色圆斑。看一眼像素值就明白了：mask 在屏幕中心区域是全透明（让截图透出来），在圆角边缘和摄像头位置是不透明的机身色（要**盖在截图上面**）。正确用法是先方形贴图、再 `alpha_composite` 叠 mask。
+
+> ⚠️ **坑：截图入库前先压缩**。Pillow 直出的 PNG 一张 500-800KB，TinyPNG 过一遍普遍降 60% 到 150-250KB，肉眼无差。商店图会进 git 仓库和 F-Droid 构建，体积值得省。
+
+## 三、录一段能上官网的演示视频
+
+官网的应用展示，动图远比静态截图有说服力。现代做法不是 GIF，而是静音自动循环的 MP4：
+
+```html
+<video
+  src="/app-demo.mp4"
+  poster="/app-demo-poster.jpg"
+  autoplay loop muted playsinline
+  preload="metadata"
+  class="w-64 rounded-3xl border-8 border-neutral-900 shadow-2xl"
+></video>
+```
+
+手机壳直接用 CSS 画（粗深色边框 + 大圆角 + 阴影），视频只录纯屏幕内容——比把壳烧进视频灵活得多，改设计不用重录。
+
+**录制**。如果有真机，用系统自带录屏最省事（注意关掉「显示点按位置」和声音采集）。我这次用模拟器全自动录，把三种方式都趟了一遍，帧率差距巨大：
+
+| 方式 | 实测帧率 | 结论 |
+|---|---|---|
+| `adb shell screenrecord` | ~3fps | 幻灯片，不可用 |
+| `adb emu screenrecord`（宿主侧 WebM） | ~10fps | 勉强，仍卡顿 |
+| **scrcpy `--record`** | **15-22fps** | 可用 |
+
+```bash
+scrcpy -s emulator-5554 --no-playback --no-audio \
+  --record=demo.mp4 --max-fps=60 --video-bit-rate=12M --time-limit=19 &
+# 同时用 adb input swipe/tap 驱动演示脚本……
+wait
+```
+
+20fps 对滚动画面来说仍偏低，但有个简单技巧能把观感拉回来：**放慢手势**。`input swipe` 的持续时间拉到 1800ms、单次位移控制在 650px 左右，内容移动速度慢了，每帧位移只有几个像素，感知上就顺滑了。快速甩动 + 低帧率才是卡顿感的来源。
+
+**压制**。录完用 ffmpeg 出片 + 抽首帧当 poster：
+
+```bash
+ffmpeg -ss 0.3 -to 17.8 -i demo.mp4 \
+  -vf "scale=720:-2" -c:v libx264 -crf 28 -preset slow \
+  -pix_fmt yuv420p -an -movflags +faststart app-demo.mp4
+ffmpeg -ss 0.4 -i demo.mp4 -frames:v 1 -vf "scale=720:-2" app-demo-poster.jpg
+```
+
+17 秒的成片压到 750KB 左右，直接进网站仓库走 CDN，不需要对象存储。
+
+✅ **验证**：`ffprobe -select_streams v -show_entries frame=pts_time` 数一下滚动段的每秒帧数；成片在 240-300px 显示宽度下播放流畅、状态栏时间不跳。
+
+> ⚠️ **坑：scrcpy 不能强杀**。`kill -INT` 时机不对会来不及写 MP4 的 moov atom，文件直接报 `moov atom not found` 作废。用 `--time-limit` 让它自然结束。
+
+> ⚠️ **坑：内容脚本一镜一事**。每段 5-8 秒只讲一个卖点，录之前把演示数据准备好（列表有新鲜内容、对话有预设问题），录完检查有没有把录屏指示器、悬浮窗之类的穿帮元素录进去。
+
+## 四、接入 fastlane supply
+
+`supply` 是 fastlane 里专管 Play 上架物料的子工具，能上传商品详情文案、截图、AAB 和发版说明。你的仓库如果已经为 F-Droid 维护了 `fastlane/metadata/android/` 目录，那一份数据两个商店直接通用，连 changelog 的 versionCode 命名都是同一套约定。
+
+**服务账号与授权**（一次性，约 15 分钟）：
+
+1. Google Cloud 控制台任意项目里启用 **Google Play Android Developer API**，创建服务账号（无需任何项目角色），下载 JSON 密钥；
+2. Play Console →「用户和权限」→ 邀请新用户，填服务账号邮箱，**应用权限只勾目标 App 的「管理商店发布」**（只同步物料的话不要给发版权限，最小化起步）;
+3. 后续要 CI 自动发版时，再补一项「发布为正式版、排除设备以及使用 Google Play 应用签名功能」。
+
+✅ **验证**：分两层，缺一不可——
+
+```bash
+# 第一层：密钥能连上 API
+fastlane run validate_play_store_json_key json_key:key.json
+# 第二层：对目标 App 真有权限（拉一次线上物料）
+fastlane supply init --package_name <你的包名> --json_key key.json
+```
+
+> ⚠️ **坑：validate 成功 ≠ 有应用权限**。`validate_play_store_json_key` 只验证 API 连通性；服务账号没被邀请进对应开发者账号时，它照样报成功，而 `supply init` 一跑就是 `Google Api Error: The caller does not have permission`。以 init 能拉到数据为准。
+
+**首次接入必做：先 init 对齐，再上传**。`supply init` 会把线上现有物料完整拉下来，逐文件和仓库 diff。这一步救了我一次——我仓库里的文案和 Play 后台的不一致（后台是老定位的存量文案，仓库是新口径），而 supply 的截图上传是**先删线上再传本地**的整体替换，文案同理。如果不先对齐就上传，分叉的那一边会被静默覆盖。**动手前先定好唯一事实源的方向**（我的选择：一律以仓库为准，Play 后台从此只读），把另一边回写对齐，再开始同步。
+
+> ⚠️ **坑：平板截图的目录位置别猜**。fastlane 有 `sevenInchScreenshots` 和 `tenInchScreenshots` 两个平板位，你后台实际用的是哪个，`supply init` 拉下来一看便知——我的在 7 寸位，直觉放 10 寸就白传了。
+
+日常同步命令（先加 `--validate_only true` 干跑）：
+
+```bash
+fastlane supply --package_name <你的包名> \
+  --json_key key.json \
+  --metadata_path fastlane/metadata/android \
+  --skip_upload_apk true --skip_upload_aab true \
+  --skip_upload_changelogs true
+```
+
+## 五、CI 挂两条链路
+
+本地能跑通后，把它交给 GitHub Actions。密钥内容存进 repo secret（如 `PLAY_SERVICE_ACCOUNT_JSON`），运行时通过 `SUPPLY_JSON_KEY_DATA` 环境变量传给 fastlane——它原生识别这个变量，密钥全程不落盘、不出现在命令行参数和日志里。
+
+**链路一：商品详情同步**。文案截图偶尔才改，改了就该立即生效，不该等发版：
+
+```yaml
+name: Play Listing Sync
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'fastlane/metadata/android/**'
+  workflow_dispatch: # 手动补跑入口
+
+jobs:
+  sync-listing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - name: Sync listing to Google Play
+        env:
+          SUPPLY_JSON_KEY_DATA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          gem install fastlane --no-document
+          fastlane supply --package_name <你的包名> \
+            --metadata_path fastlane/metadata/android \
+            --skip_upload_apk true --skip_upload_aab true \
+            --skip_upload_changelogs true
+```
+
+> ⚠️ **坑：`gem install fastlane` 在 runner 上直接跑会挂**——`You don't have write permissions for the /var/lib/gems/3.2.0 directory`。ubuntu-latest 的系统 Ruby 装 gem 需要 sudo，加一步 `ruby/setup-ruby` 用工具链 Ruby 即可。这个雷我是在 listing 链路首跑时踩的，发版链路里同款命令还没来得及炸就顺手修了。
+
+**链路二：发版**。在现有 release 工作流（构建 + 签名 + GitHub Release）的末尾追加一步，正式版 tag 上传 AAB 到 production 轨道：
+
+```yaml
+      - name: Publish to Google Play
+        env:
+          SUPPLY_JSON_KEY_DATA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          # 预发布不上 Play，灰度走 GitHub Release 附件
+          if [[ "${{ github.ref_name }}" =~ (alpha|beta|rc) ]]; then
+            echo "Prerelease tag，跳过 Play 发布"; exit 0
+          fi
+
+          AAB_PATH=$(find androidApp/build/outputs/bundle/playRelease -name "*.aab" | head -n 1)
+          gem install fastlane --no-document
+          fastlane supply --package_name <你的包名> \
+            --aab "$AAB_PATH" \
+            --track production \
+            --metadata_path fastlane/metadata/android \
+            --skip_upload_apk true \
+            --skip_upload_metadata true \
+            --skip_upload_images true \
+            --skip_upload_screenshots true
+```
+
+注意两条链路的 skip 参数正好互补：listing 链路跳过包和 changelog，发版链路跳过文案和截图。changelog（`changelogs/<versionCode>.txt`）跟着 AAB 走，因为发版说明必须挂在具体 versionCode 上——listing 链路没有包，传了也挂不上。
+
+发版说明我加了一层兜底：优先读仓库里人工写好的 changelog 文件，不存在时从 App 内置的更新说明 JSON 就地生成（逐条累加、超过 Play 的 500 字符上限就整条丢弃，不截半句），只喂给 supply、不回写仓库。人工写的质量优先，兜底只防漏。
+
+✅ **验证**：listing 链路推一次 metadata 变更看全绿；发版链路等下一个正式版 tag 实战（重点看 AAB 上传和 changelog 挂载两行日志）。
+
+## 操作前 Checklist
+
+- [ ] demo mode 已开：固定时钟、满电、隐藏通知、隐藏移动网络图标
+- [ ] App 语言已切到目标 locale（优先应用内切换）
+- [ ] 裸截图分辨率与设备原生一致（套壳脚本会校验）
+- [ ] 套壳输出与旧商店图同规格（有历史图可对照）
+- [ ] PNG 已过 TinyPNG 再入库
+- [ ] 录屏用 scrcpy + `--time-limit`，手势放慢，状态栏时间不跳
+- [ ] 首次接 supply：先 `supply init` 拉线上对齐，**定好文案唯一事实源的方向**
+- [ ] supply 正式上传前先 `--validate_only true` 干跑
+- [ ] 服务账号权限最小化：只同步物料就别勾发版
+- [ ] CI 密钥走 secret + `SUPPLY_JSON_KEY_DATA` 环境变量，不落盘
+
+## 坑速查表
+
+| 症状 | 根因 | 修复 | 章节 |
+|---|---|---|---|
+| 套壳后四角白色方块、挖孔位置灰斑 | 把 mask.webp 当抠图蒙版用了 | 先方形贴图，再 `alpha_composite` 叠 mask（它是前景） | 二 |
+| 状态栏出现 3G 图标 / 时间电量不统一 | 没开 demo mode 或漏了 `mobile hide` | 补全 demo mode 广播组 | 一 |
+| 模拟器录屏像幻灯片（~3fps） | `adb screenrecord` 在模拟器上只按画面更新出帧 | 换 scrcpy `--record` | 三 |
+| 录制文件报 `moov atom not found` | scrcpy 被强杀，没来得及 finalize | 用 `--time-limit` 自然结束 | 三 |
+| 密钥 validate 成功但 supply 报 `caller does not have permission` | 服务账号没被邀请进开发者账号 / 缺应用权限 | Play Console 用户和权限里邀请并勾「管理商店发布」 | 四 |
+| 平板截图上传了但商店没变化 | 放错目录（sevenInch vs tenInch） | `supply init` 拉线上确认实际使用的目录 | 四 |
+| 上传后线上文案被换成旧版 | 仓库与后台分叉，supply 是整体替换 | 先 init 对齐、定唯一事实源，再开始同步 | 四 |
+| CI 报 `You don't have write permissions for /var/lib/gems` | runner 系统 Ruby 装 gem 需 sudo | 加 `ruby/setup-ruby` 步骤 | 五 |
+
+---
+
+这条流水线搭完后，商店物料从「改版后最不想碰的杂活」变成了流程的自然末端：截图脚本一跑、push、tag，剩下的交给 CI。如果你的项目也同时上架 F-Droid 和 Play，`fastlane/metadata` 这份一鱼两吃的元数据会让收益翻倍。
