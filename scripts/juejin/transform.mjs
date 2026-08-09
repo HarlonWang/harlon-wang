@@ -23,9 +23,14 @@ export function parsePost(raw) {
 
 // MDX 专有语法（import/export 语句、JSX 组件标签）当纯 Markdown 发会坏，
 // 命中则由上层跳过并告警。只认大写开头的 JSX 组件，避免误伤 <img>、<https://...> 等。
+// 先剔除围栏代码块与行内 code 再检测：代码示例里的 import/export（如 Python 代码）
+// 和大写开头的标签不是 MDX 语法，不应触发跳过。
 export function hasMdxSyntax(body) {
-    if (/^\s*(import|export)\s+/m.test(body)) return true;
-    if (/<\/?[A-Z][A-Za-z0-9]*[\s/>]/.test(body)) return true;
+    const withoutCode = body
+        .replace(/```[\s\S]*?```/g, '')
+        .replace(/`[^`\n]*`/g, '');
+    if (/^\s*(import|export)\s+/m.test(withoutCode)) return true;
+    if (/<\/?[A-Z][A-Za-z0-9]*[\s/>]/.test(withoutCode)) return true;
     return false;
 }
 
