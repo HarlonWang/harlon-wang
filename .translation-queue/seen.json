@@ -35,8 +35,8 @@
         "translatedAt": "2026-05-29"
     },
     "https://www.anthropic.com/engineering/building-effective-agents": {
-        "lastmod": "2026-04-13T17:46:47.000Z",
-        "status": "translated",
+        "lastmod": "2026-08-10T22:57:30.000Z",
+        "status": "outdated",
         "discoveredAt": "2026-05-28",
         "translatedSlug": "building-effective-agents",
         "translatedAt": "2026-05-28"
@@ -175,7 +175,7 @@
         "translatedAt": "2026-05-28"
     },
     "https://www.anthropic.com/institute/recursive-self-improvement": {
-        "lastmod": "2026-08-10T02:21:19.456Z",
+        "lastmod": "2026-08-17T01:44:19.168Z",
         "status": "outdated",
         "discoveredAt": "2026-06-05",
         "translatedSlug": "when-ai-builds-itself",
