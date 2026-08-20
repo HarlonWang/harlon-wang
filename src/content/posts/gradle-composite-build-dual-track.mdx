@@ -1,0 +1,258 @@
+---
+title: 本地源码还是 Maven 版本？Gradle composite build 双轨依赖的正确接法
+type: original
+authorship: ai-led
+publishDate: 2026-08-20
+description: 让 App 在本机吃自家库的源码、在 CI 吃已发布版本——两轨切换的机制拆解：Gradle 自动替换按什么匹配、为什么"对齐名字省掉映射"这条路走不通、如何做成约定驱动新增库零改代码，以及那个不报错的静默退回坑。
+tags:
+  - Gradle
+  - Kotlin Multiplatform
+  - 依赖管理
+  - Android
+  - 构建
+---
+
+自己维护的库被自己的 App 依赖时，都会遇到同一个矛盾：**发版太慢，不发版又验证不了**。库里改一行，要 push tag、等 CI、等 Maven Central 同步，才能在 App 里看到效果。Gradle 的 composite build 是标准解法——本机直接吃库的源码，改完立刻生效。
+
+我给两个自家 KMP 库（[loginbase-kt](https://github.com/HarlonWang/loginbase-kt) 登录底座、[eventbase-kt](https://github.com/HarlonWang/eventbase-kt) 埋点客户端）和消费方 App [TrendingAI](https://github.com/HarlonWang/TrendingAI) 接的就是这套双轨。最终的状态是：
+
+```properties
+# local.properties（不提交）
+eventbase-kt.dir=../eventbase-kt
+```
+
+写上这一行，本机构建直接编译库源码；注释掉，就走 `libs.versions.toml` 里的 Maven 版本；CI 上没有 `local.properties`，恒定走 Maven。**新增第三个、第四个库时，App 的 `settings.gradle.kts` 一个字都不用改。**
+
+这篇按操作顺序拆解：**接上本地源码 → 弄清替换的匹配规则 → 把映射交给库自己声明 → 守住 CI 那条轨**。核心要带走的是一条反直觉结论：composite build 配错时，Gradle **不报错**，它会安静地退回 Maven 版本，让你以为自己在吃本地源码——这个坑比构建失败危险得多。文末照例有 Checklist 和坑速查表。
+
+## 全局：双轨长什么样
+
+```
+本机构建                                CI 构建
+local.properties 里有 <库>.dir ?         仓库里没有 local.properties
+   ↓ 有                                     ↓
+includeBuild(库目录)                     libs.versions.toml 的版本号
+   ↓ dependencySubstitution                 ↓
+把 Maven 坐标换成 included build 的项目    从 Maven Central 拉 aar / klib
+   ↓                                        ↓
+App 直接编译库源码，改库立刻生效           App 吃的是已发布的那一版
+```
+
+三条绕不开的机制：
+
+- **替换靠的是坐标匹配，不是目录**。`includeBuild(dir)` 只是把另一个 Gradle 构建挂进来，真正让 `implementation(libs.eventbase.kt)` 指向本地项目的，是依赖替换（dependency substitution）那一步。挂进来了不等于换过去了。
+- **Gradle 的自动替换按 `project.group:project.name` 匹配**，而不是按你发布时声明的坐标。这两者在真实项目里经常不是一回事——下一节展开。
+- **两条轨构建的不是同一份代码，而且分岔不会有任何报错**。库里改了代码却没发版，本机照常绿，CI 仍在用旧版本，问题要到打 tag 那天才炸出来。所以纪律必须写死：**改了库就发版，并同步 bump `libs.versions.toml` 的版本号**——那里的版本才是 CI 的唯一真相。
+
+## 阶段一：把本地源码接进来
+
+目标：让 App 的编译真的吃到库的源码。
+
+在 App 的 `settings.gradle.kts` 里：
+
+```kotlin
+includeBuild(dir) {
+    dependencySubstitution {
+        // 左边是发布坐标（App 在 libs.versions.toml 里依赖的那个），右边是库仓里的项目路径
+        substitute(module("wang.harlon:eventbase-kt")).using(project(":library"))
+    }
+}
+```
+
+### ✅ 本阶段验证：看任务路径，不要看 BUILD SUCCESSFUL
+
+```bash
+./gradlew :shared:compileAndroidMain --rerun-tasks
+```
+
+输出里必须出现 included build 的编译任务：
+
+```
+> Task :eventbase-kt:library:compileAndroidMain
+```
+
+任务路径的形状是 `:<included build 名>:<项目路径>:<任务>`。**没有这一行，就是没走本地源码**——无论构建多绿。这是全文最值得记住的一条验证动作。
+
+### 坑：省掉 dependencySubstitution，构建照样成功
+
+只写 `includeBuild(dir)` 不写替换块，实测结果是 `BUILD SUCCESSFUL`，但任务列表里没有任何 included build 的编译任务——它安静地吃了 Maven 上的老版本。你在库里改的代码一行都没生效，而构建日志不会给你任何提示。
+
+根因是自动替换的匹配口径。Gradle 会拿 included build 里每个项目的 `project.group:project.name` 去和依赖坐标比对，而这两个值默认是：
+
+- `group`：子项目没显式设置时，取的是**根项目名**（库仓叫 `eventbase-kt`，group 就是 `eventbase-kt`）；
+- `name`：Gradle 项目名（模块目录名，这里是 `library`）。
+
+于是待匹配的是 `eventbase-kt:library`，而 App 依赖的坐标是 `wang.harlon:eventbase-kt`——对不上，不替换，静默走 Maven。发布坐标（vanniktech 插件里 `coordinates(groupId, artifactId)` 声明的那对）压根不参与这次匹配。
+
+想确认自己库的真实取值，一条命令：
+
+```bash
+./gradlew -q :library:properties | grep -E '^(group|name):'
+# group: eventbase-kt
+# name: library
+```
+
+## 阶段二：别指望"把名字对齐"来省掉映射
+
+既然自动替换按 `group:name` 匹配，很自然会想：那我把库的 `group` 设成 `wang.harlon`、项目名设成 `eventbase-kt`，不就自动匹配上、省掉映射了吗？
+
+实测这条路走不通，值得记一笔。在库仓的 `settings.gradle.kts` 里：
+
+```kotlin
+include(":library")
+project(":library").name = "eventbase-kt"   // 目录仍是 library/，只改 Gradle 项目名
+```
+
+Gradle 本身接受这种改名，`./gradlew projects` 能看到 `project ':eventbase-kt' - /library`。但消费方一构建就炸：
+
+```
+GeneratedClassCompilationException: Unable to compile generated sources:
+  - File RootProjectAccessor.java, line: 29, 已在类 org.gradle.accessors.dm.RootProjectAccessor
+    中定义了方法 getEventbaseKt()
+```
+
+根因：子项目名与 `rootProject.name` 撞车，类型安全项目访问器（`enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")`）会为二者生成同名方法。而库仓名**通常就等于主 artifact 名**——`loginbase-kt` 仓里那个发布为 `wang.harlon:loginbase-kt` 的模块同样会撞。
+
+所以"名字对齐"只在**库即根项目的单模块仓**里成立；只要仓里是 root + 子模块的结构（比如 loginbase-kt 还有个发布为 `-browser` 的扩展模块），显式映射就省不掉。而 Maven 坐标一旦发出去就不能改，也没有"改坐标去迁就项目名"这个选项。
+
+**结论：映射消不掉，能决定的只是它写在哪。**
+
+## 阶段三：把映射交给库自己声明
+
+映射写在 App 的 `settings.gradle.kts` 里有个隐蔽的代价：**库的内部结构漏进了消费方**。
+
+我就撞了个现成的例子——把 eventbase-kt 里那个模块从 `core` 改名成 `library`（这仓只有一个模块，`core` 是从多模块的邻居仓照抄来的名字），结果 App 的 `settings.gradle.kts` 被迫跟着改。库内部的模块名，本不该是消费方需要知道的事。
+
+耦合方向反了，那就把它掉过来：**让库自己声明"我的发布坐标对应哪个项目路径"**，App 侧按约定读。
+
+库仓根目录下加一个 `gradle/composite-substitutions`：
+
+```
+# 消费方 composite build 的契约：发布坐标 → 本仓项目路径（改模块名或路径要同步改这里）。
+# artifactId 与 Gradle 项目名对不上，Gradle 的自动替换会静默退回 Maven 版本，故必须显式声明。
+wang.harlon:eventbase-kt = :library
+```
+
+多模块的库就多写几行：
+
+```
+wang.harlon:loginbase-kt = :core
+wang.harlon:loginbase-kt-browser = :browser
+```
+
+App 的 `settings.gradle.kts` 于是变成完全通用的一段，里面不出现任何库名：
+
+```kotlin
+val localProperties = java.util.Properties().apply {
+    val file = rootDir.resolve("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun localSourceDir(key: String): File? {
+    val configured = localProperties.getProperty(key)
+    if (configured.isNullOrBlank()) return null
+    val dir = File(configured).takeIf { it.isAbsolute } ?: rootDir.resolve(configured)
+    require(dir.exists()) { "local.properties 配置的 $key 不存在: $dir" }
+    // 让「我这次吃的是本地源码」这件事每次构建都可见，而不是要去翻 local.properties 才知道
+    logger.lifecycle("$key: 本地源码 $dir（CI 用 libs.versions.toml 的 Maven 版本）")
+    return dir
+}
+
+// 映射文件缺失一律报错：Gradle 的自动替换在坐标对不上时不报错、静默退回 Maven 版本，
+// 那种「以为在吃本地源码、其实没有」的错觉比构建失败危险得多。
+fun compositeSubstitutions(dir: File): Map<String, String> {
+    val file = dir.resolve("gradle/composite-substitutions")
+    require(file.exists()) {
+        "$dir 缺少 gradle/composite-substitutions（每行 `<group>:<artifactId> = <项目路径>`）；" +
+            "没有它 Gradle 会静默退回 Maven 版本，本地源码等于没接上"
+    }
+    return file.readLines()
+        .map { it.substringBefore('#').trim() }
+        .filter { it.isNotEmpty() }
+        .associate { line ->
+            val parts = line.split('=', limit = 2).map(String::trim)
+            require(parts.size == 2 && parts.none(String::isEmpty)) { "$file 这行不是 `坐标 = 项目路径`: $line" }
+            parts[0] to parts[1]
+        }
+        .also { require(it.isNotEmpty()) { "$file 是空的" } }
+}
+
+// local.properties 里这几个 .dir 是 Android SDK 的，不是库
+val toolchainDirKeys = setOf("sdk.dir", "ndk.dir", "cmake.dir")
+
+localProperties.stringPropertyNames()
+    .filter { it.endsWith(".dir") && it !in toolchainDirKeys }
+    .sorted()
+    .forEach { key ->
+        val dir = localSourceDir(key) ?: return@forEach
+        includeBuild(dir) {
+            dependencySubstitution {
+                compositeSubstitutions(dir).forEach { (coordinate, projectPath) ->
+                    substitute(module(coordinate)).using(project(projectPath))
+                }
+            }
+        }
+    }
+```
+
+这样一来：新增一个库 = `local.properties` 加一行，`settings.gradle.kts` 不动；库内部改模块名 = 只动库仓自己。
+
+### ✅ 本阶段验证：两个库同时开
+
+`local.properties` 里两行都写上，然后：
+
+```bash
+./gradlew :shared:compileAndroidMain --rerun-tasks
+```
+
+```
+> Task :eventbase-kt:library:compileAndroidMain
+> Task :loginbase-kt:core:compileAndroidMain
+```
+
+再把库仓的映射文件临时挪走，确认报的是人话而不是静默通过：
+
+```
+* What went wrong:
+../loginbase-kt 缺少 gradle/composite-substitutions（每行 `<group>:<artifactId> = <项目路径>`）；
+没有它 Gradle 会静默退回 Maven 版本，本地源码等于没接上
+```
+
+### 坑：别给映射文件缺失设计"优雅降级"
+
+写这段代码时最容易顺手加一句"文件不存在就退回自动替换"。**别加。** 自动替换在坐标对不上时正是静默退回 Maven——你精心加的兜底，恰好把整个机制退回到阶段一那个不报错的坑里。缺失就 `require` 抛出，让人当场看见。
+
+同理，`.dir` 键的过滤要显式排除 `sdk.dir` / `ndk.dir` / `cmake.dir`：那几个是 Android SDK 路径，不是库。
+
+## 阶段四：守住 CI 那条轨
+
+双轨机制真正的风险不在本机，在两条轨的分岔。三件事要盯住：
+
+- **`libs.versions.toml` 是 CI 的唯一真相**。改了库就发版、并 bump 版本号，否则本机验证过的行为在 CI 上根本不存在。
+- **配置缓存命中时，`settings.gradle.kts` 整个不重跑**，那句 `logger.lifecycle` 也就不打印。别把"这次没打印"当成"没走本地源码"——以任务路径为准，日志只是提醒。
+- **`local.properties` 必须保持 gitignore**。它带着每个人本机的绝对路径，提交上去 CI 会当真，然后在一个不存在的目录上失败。
+
+## 上手 Checklist
+
+- [ ] 每个自家库仓根下有 `gradle/composite-substitutions`，内容是「发布坐标 = 项目路径」
+- [ ] App 的 `settings.gradle.kts` 里不出现任何库名，只有扫 `.dir` 的通用循环
+- [ ] 映射文件缺失是硬报错，没有"退回自动替换"的兜底
+- [ ] `local.properties` 在 gitignore 里，示例路径写进 README 或 `local.properties.example`
+- [ ] 用 `--rerun-tasks` 跑一次编译，确认 `> Task :<库>:<模块>:compileXxx` 出现过
+- [ ] 库仓改模块名后，同步改了自己那份映射文件（消费方不需要动）
+- [ ] 团队里写死纪律：改库就发版 + bump `libs.versions.toml`
+
+## 坑速查表
+
+| 症状 | 根因 | 修复 | 章节 |
+|---|---|---|---|
+| 库里改了代码，App 构建成功但行为没变 | 只 `includeBuild` 没写 `dependencySubstitution`，坐标对不上被静默退回 Maven | 显式声明 `substitute(module(...)).using(project(...))`，并用任务路径验证 | 阶段一 |
+| 不确定当前吃的是本地源码还是 Maven | 构建日志不会说，`BUILD SUCCESSFUL` 两边都一样 | 看有没有 `> Task :<included build>:<项目>:compileXxx` | 阶段一 |
+| 自动替换怎么调都不生效 | 匹配的是 `project.group:project.name`，不是发布坐标；子项目 group 默认取根项目名 | `./gradlew -q :模块:properties \| grep '^group:'` 看真实取值，然后老实写映射 | 阶段一 |
+| 把项目名改成 artifactId 后，消费方报 `RootProjectAccessor` 方法重复 | 子项目名与 `rootProject.name` 撞车，类型安全项目访问器生成重名方法 | 放弃对齐名字，多模块库只能显式映射 | 阶段二 |
+| 库里改个模块名，消费方 App 被迫跟着改 settings | 映射写在消费方，库的内部结构漏了出去 | 映射下沉到库仓的 `gradle/composite-substitutions` | 阶段三 |
+| CI 上的行为和本机不一致 | 本机吃源码、CI 吃 Maven 版本，改库没发版就会分岔 | 改库即发版并 bump 版本号 | 阶段四 |
+
+## 最后
+
+这套东西真正的价值不是"少写几行 settings"，而是把两个容易出事的点固定住了：**一是让"我现在在哪条轨上"随时可验证**（看任务路径），**二是让配错变成报错而不是错觉**。Gradle 在依赖替换这件事上默认是宽容的——匹配不上就当没这回事——而这种宽容在双轨场景里恰好是最坏的默认值。凡是能静默退回的地方，都值得你主动加一道 `require`。
