@@ -10,11 +10,17 @@ tags:
   - 依赖管理
   - Android
   - 构建
+juejin:
+  category: Android
+  tags:
+    - Android
+    - Kotlin
+    - CI/CD
 ---
 
 自己维护的库被自己的 App 依赖时，都会遇到同一个矛盾：**发版太慢，不发版又验证不了**。库里改一行，要 push tag、等 CI、等 Maven Central 同步，才能在 App 里看到效果。Gradle 的 composite build 是标准解法——本机直接吃库的源码，改完立刻生效。
 
-我给两个自家 KMP 库（[loginbase-kt](https://github.com/HarlonWang/loginbase-kt) 登录底座、[eventbase-kt](https://github.com/HarlonWang/eventbase-kt) 埋点客户端）和消费方 App [TrendingAI](https://github.com/HarlonWang/TrendingAI) 接的就是这套双轨。最终的状态是：
+我给两个自家 KMP 库（[loginbase-kt](https://github.com/HarlonWang/loginbase-kt) 登录底座、eventbase-kt 埋点客户端）和消费方 App [TrendingAI](https://github.com/HarlonWang/TrendingAI) 接的就是这套双轨。最终的状态是：
 
 ```properties
 # local.properties（不提交）
