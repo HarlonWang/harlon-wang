@@ -50,7 +50,7 @@ App(B) ─code─▶ Worker ─▶ GitHub 换得 token_B            （2h 内，
                Worker 按 A 的 id 找到账户 A ─▶ B 拿到 A 的会话，token_B 存进 A 名下 ✗
 ```
 
-规则是 8 月下旬为了让官网静态资源快一点，在面板上从模板一键创建的，配置全是模板默认值：匹配所有请求、Eligible for cache、Edge TTL 选「Ignore cache-control header and use this TTL」两小时、cache key 不定制。zone 同时开着 Smart Tiered Cache。
+规则是为了让官网静态资源快一点，在面板上从模板一键创建的，配置全是模板默认值：匹配所有请求、Eligible for cache、Edge TTL 选「Ignore cache-control header and use this TTL」两小时、cache key 不定制。zone 同时开着 Smart Tiered Cache。
 
 后果是双向的。后登录者拿到的是前一个人的账户会话；前一个人的账户里从此存着后登录者的 GitHub token，此后所有以「他的 GitHub 身份」发起的读写，实际都是以后登录者的身份执行。两边界面上都没有醒目的「你是谁」提示，多位用户的行为形态（登录后秒退、几分钟后再登）说明他们察觉到不对，但没有人通过 App 内的反馈入口报告。
 
