@@ -1,0 +1,184 @@
+---
+title: 一条「Cache everything」让用户登进了别人的账户：Cloudflare Workers 子请求缓存复盘
+type: original
+authorship: ai-led
+publishDate: 2026-09-03
+description: 为官网性能在 zone 上点了一条 Cloudflare 缓存模板，结果 Worker 里的 GitHub 登录把 api.github.com/user 按 URL 缓存了两小时，一批用户登进了别人的账户。复盘三个大多数人不知道的事实：zone 规则会作用于 Worker 的第三方子请求；主流 OAuth 库没有一个做缓存豁免；HTTP 规范、CDN 默认、库习惯是三层不同的责任。附排查走偏记录、探针代码与可操作清单。
+tags:
+  - Cloudflare
+  - Cloudflare Workers
+  - Postmortem
+  - 安全
+  - OAuth
+  - 缓存
+---
+
+登录成功了，但登进的是别人的账户，服务端却看不出任何异常。这在 [TrendingAI](https://github.com/HarlonWang/TrendingAI) 的生产环境里静默持续了一个多星期，受影响的包括作者自己的账户。
+
+根因是一条为官网性能配的 zone 级 Cache Rule「Cache everything」。它同样作用于同一个 zone 下 API Worker 向第三方发出的子请求，把 GitHub OAuth 回调里的 `GET https://api.github.com/user` 按 URL 缓存了两小时。URL 对所有用户相同，身份只在 `Authorization` 头里，第一个登录者的资料就被之后所有人拿到。
+
+这篇不是讲「我配错了一条规则」。它讲三件用 Cloudflare Workers 做登录或调第三方 API 的人大多不知道的事：
+
+1. zone 级 Cache Rules 会作用于 Worker 对第三方的子请求，Cloudflare 文档写了，只是没人读到那一句。
+2. 主流开源 OAuth 库没有一个对 `GET /user` 做缓存豁免，它们的隐含假设是「出站 Bearer 请求不会被中间层缓存」。
+3. HTTP 缓存规范、CDN 默认行为、库习惯是三层不同的责任。CloudFront 是安全默认的参照物，Steam、Klarna、Railway 都出过同型事故。
+
+中间是排查走偏的四步，比根因本身更值得看。文末是三条清单：zone 零缓存规则、push 触发的漂移检测、身份来源不唯一。
+
+## 事故本身
+
+系统很普通：Astro 官网在 `trendingai.cn`，API 是一个 Cloudflare Worker，通过自定义域挂在 `api.trendingai.cn`，同一个 zone。GitHub 登录走标准 OAuth，Worker 用换来的 token 请求 `GET /user` 确定「这是谁」，再按 GitHub 数字 id 找到账户、签发会话、把 token 存进账户名下。规则生效前后的差别只在中间那一格：
+
+```
+正常（zone 上没有缓存规则）
+
+App(A) ─code─▶ Worker ─▶ GitHub 换得 token_A
+               Worker ─GET /user, Bearer token_A─▶ 边缘缓存：不存（响应带 private）
+                      ─▶ api.github.com ─▶ A 的资料
+               Worker 按 A 的 id 找到账户 A ─▶ 签发 A 的会话，token_A 存进 A 名下   ✓
+
+规则生效（Cache everything：忽略 cache-control，key 只有 URL，TTL 2h）
+
+App(A) ─code─▶ Worker ─▶ GitHub 换得 token_A
+               Worker ─GET /user, Bearer token_A─▶ 边缘缓存 MISS
+                      ─▶ api.github.com ─▶ A 的资料，按 URL 存下 2h
+               Worker 按 A 的 id 找到账户 A ─▶ A 登进自己的账户                     ✓
+
+App(B) ─code─▶ Worker ─▶ GitHub 换得 token_B            （2h 内，同一缓存层）
+               Worker ─GET /user, Bearer token_B─▶ 边缘缓存 HIT
+                      （URL 相同，key 里没有 Authorization）─▶ 返回 A 的资料
+               Worker 按 A 的 id 找到账户 A ─▶ B 拿到 A 的会话，token_B 存进 A 名下 ✗
+```
+
+规则是 8 月下旬为了让官网静态资源快一点，在面板上从模板一键创建的，配置全是模板默认值：匹配所有请求、Eligible for cache、Edge TTL 选「Ignore cache-control header and use this TTL」两小时、cache key 不定制。zone 同时开着 Smart Tiered Cache。
+
+后果是双向的。后登录者拿到的是前一个人的账户会话；前一个人的账户里从此存着后登录者的 GitHub token，此后所有以「他的 GitHub 身份」发起的读写，实际都是以后登录者的身份执行。两边界面上都没有醒目的「你是谁」提示，多位用户的行为形态（登录后秒退、几分钟后再登）说明他们察觉到不对，但没有人通过 App 内的反馈入口报告。
+
+它被发现纯属偶然：我在模拟器上开发 iOS 登录，用自己的 GitHub 账号授权，登进了一个陌生账户。处置是停用规则、清空边缘缓存、撤销全部串号会话、清空受害账户里的入侵者 token。规则停用后复核过一轮，没有再出现串号。
+
+## 事实一：zone 的缓存规则会套在 Worker 的第三方子请求上
+
+Cloudflare 的《How the Cache works》（Workers 文档）对 `fetch()` 是这么写的：
+
+> "it reads through its own zone's cache, even if the URL is for a non-Cloudflare site. Cache settings on fetch automatically apply caching rules based on your Cloudflare settings."
+
+同一页开头的 Note 也点名了场景：「when a Worker runs on a zone with Cache Rules configured」。这不是未文档化的角落，是写在第一屏的。问题在于配规则的人心智模型里只有「官网静态资源」，没有「同一个 zone 下还挂着 Worker，Worker 还会往外发请求」。
+
+GitHub 对 `/user` 的响应本来有三道防线：`Cache-Control: private`、`max-age=60` / `s-maxage=60`、`Vary: Authorization`。按 RFC 9111 §5.2.2.7，`private` 意味着「a shared cache MUST NOT store the response」；按 §4.1，`Vary` 列出的头必须逐一匹配才能复用。Cloudflare 的默认行为也守这条线，《Default cache behavior》明写「The Cloudflare CDN does not cache HTML or JSON by default」，而且 `private` 在默认不缓存的条件列表里。所以在没有规则的 zone 上，这个请求是安全的。
+
+那条模板规则把三道防线一起拆了：
+
+- Edge TTL 选项的文档原句是「Completely ignore any cache-control header on the response and instead cache the response for a duration specified in the timing dropdown」。`private` 就这样被无视。
+- Vary 在 Cloudflare 默认不参与决策：「By default, Cloudflare does not consider vary values in caching decisions.」GitHub 声明了 `Vary: Authorization` 也没用，除非你在 Cache Rules 里配 Vary 设置或在代码里传 `cf.vary`。
+- cache key 只有 URL，`Authorization` 不在里面。
+
+Tiered Cache 让事情更糟。文档说「Smart Tiered Cache dynamically selects the single closest upper tier for each of your website's origins with no configuration required」，第三方 origin 同样算在内，所以缓存条目不是按数据中心隔离的，多个 colo 共享同一个上层节点里的那份。我们看到的串号大量发生在不同数据中心之间，和这一点吻合。
+
+还有一条影响处置：「The asset will be cached under the hostname specified within the Worker's subrequest — not the Worker's own hostname.」条目挂在 `api.github.com` 名下，你在自己的 zone 上没法按 URL 单条 purge，只能 Purge Everything。
+
+## 排查里走偏的四步
+
+从「登进了陌生账户」到「zone 规则」中间隔了几个小时，四个判断都错了，每一个都差点变成错误的修复上线。
+
+**先误判为 Workers 的默认边缘缓存。** 最初看到的证据是：不同数据中心的登录结果相关。我把这个单样本相关性当成因果，得出「Workers 裸 `fetch` 默认会缓存第三方响应」的结论，并认为证据链已经闭合。后来核实 GitHub 响应带 `private`，与这个前提直接矛盾。事实闭合和机制闭合是两回事，当时只有前者。
+
+**`cacheTtl: 0` 反而是启用缓存。** 基于错误前提，第一版修法是给 `fetch` 加 `cf: { cacheTtl: 0 }`。Cloudflare 文档对 `cacheTtl` 的定义是「This option forces Cloudflare to cache the response for this request, regardless of what headers are seen on the response ... A value of 0 indicates that the cache asset expires immediately」。它的语义是「强制缓存，然后立刻过期」，探针跑出来的 `cf-cache-status` 是 MISS → REVALIDATED / EXPIRED，其中一次复用了两分钟前的 request-id。这个修法如果上线，会把一个本来只在规则命中时才出问题的请求，变成无条件进缓存。
+
+**`cache: "no-store"` 受兼容日期限制。** 第二版修法是标准 Fetch 的 `cache: "no-store"`。它在 Workers 上由兼容标志 `cache_option_enabled` 控制，默认日期 2024-11-11；生产 Worker 的 `compatibility_date` 是 2024-02-17，文档原句是「the Workers runtime will throw an Error saying The 'cache' field on 'RequestInitializerDict' is not implemented」。探针一跑就是这个异常。如果直接上线，登录会全挂。还有一层：`request_cf_overrides_cache_rules`（默认日期 2025-04-02）之前，「Cache Rules 优先于 request.cf 里的缓存设置」，所以在老兼容日期下，代码里任何 `cf` 选项都可能被 zone 规则压掉。代码层的修法必须在挂 zone 的探针上验过才算数，文档推不出来。
+
+**探针不挂 zone 测不出来。** 我先把探针部署到 `workers.dev`，两枚不同账号的 token 连发六次，全部 DYNAMIC、身份各自正确。一度认为机制出局。区别只有一个：`workers.dev` 不属于任何 zone，不受那条规则影响。把探针挂到生产 zone 的一个子域再跑，两个 token 拿到同一个人的资料，`cf-cache-status: HIT`，`age` 5759 秒，`x-github-request-id` 完全相同。停用规则 20 秒后重跑，回到 DYNAMIC。探针环境和生产环境差一个 zone，结论就差一个方向。
+
+这四步的共同教训是一句话：机制没有直接证据之前，所有修复都是在错误前提上做功。这次如果按最初的方案改代码上线，结果是登录全挂或缓存更严重，而真正的规则原封不动。
+
+## 事实二：没有一个 OAuth 库对这个请求做缓存豁免
+
+事故之后我翻了九个开源认证库的 GitHub provider 当前源码：Auth.js、oauth4webapi、Arctic、Better Auth、Supabase Auth、Logto、Ory Kratos、Keycloak、Hono 的 oauth-providers 中间件，外加 Cloudflare 官方的 GitHub 登录示例。
+
+结果是一致的：凡是取身份的，都是 `GET /user` 加一个 Bearer 头的裸 `fetch` 或等价 HTTP client，没有任何库传 `cache`、`cf`、`Cache-Control` 或防缓存 nonce。包括专门面向 Workers 的 Hono 中间件，文件里没有 `cf`、`cache`、`no-store` 任何字样；包括 Cloudflare 自己的示例，用 Octokit 的 `users.getAuthenticated`，同样没有。
+
+这不是这些库的疏忽。整个生态的隐含假设是「出站 Bearer 请求不会被中间层按 URL 缓存」，这个不变量由基础设施维持，不由代码维持。我们自己的登录库写法与它们完全一致。这既说明我们没有犯与众不同的错，也说明照抄任何一个库都不会修好它。「业界最佳实践」在库这一层的诚实答案是：没有针对这个问题的实践。
+
+同样形状的请求不止 GitHub 的 `/user`。`/user/emails` 是一样的；任何 OIDC UserInfo 端点也是一样的，我们的旧登录轨道每次带凭据的接口调用都 `GET /oidc/me`，URL 固定、身份只在头里，规则生效期间受同一机制影响，且没有日志能量化。
+
+## 事实三：规范、厂商、库是三层不同的责任
+
+**规范层。** RFC 9111 §3.5：「A shared cache MUST NOT use a cached response to a request with an Authorization header field ... to satisfy any subsequent request unless the response contains a Cache-Control field with a response directive ... that allows it to be stored by a shared cache」，豁免只有 `must-revalidate`、`public`、`s-maxage`。GitHub 响应带 `s-maxage=60`，字面上落入豁免，但同一响应带 `private`，§3 的存储前提是全部满足才可存，一票否决。规范里没有任何条款允许缓存通过配置忽略 `private` 或 `Authorization` 而多存，「Ignore cache-control」不是规范认可的行为。
+
+**厂商层。** 四家 CDN 都允许配置把规范拆掉，差别在默认值：
+
+| | 默认存 `private` 吗 | 默认按 `Vary: Authorization` 分片吗 | 带 `Authorization` 的 GET |
+|---|---|---|---|
+| Cloudflare | 不存 | 不分片 | 按 RFC §3.5 处理 |
+| CloudFront | 遵守 | 只处理被转发的头 | 默认剥掉 `Authorization`；要转发就必须进 cache key |
+| Fastly | 不存 | 未查到 | 文档明写不阻止缓存 |
+| Akamai | 默认不看 origin 的 Cache-Control | 未查到 | 未提及 |
+
+CloudFront 是唯一在设计上排除了这个组合的：「GET and HEAD requests – CloudFront removes the Authorization header field before forwarding the request to your origin.」要么凭据到不了 origin，要么凭据在 cache key 里，两种状态都不会出现「凭据到了 origin、响应按 URL 共享」。Cloudflare 的默认最接近规范，但一条模板就把它拉到 Akamai 那一档。
+
+**事故层。** 三起公开的同型事故全是配置层，没有一起是代码 bug：
+
+- Steam，2015 年 12 月 25 日，约 34,000 账户。Valve 的原话：「a second caching configuration was deployed that incorrectly cached web traffic for authenticated users.」
+- Klarna，2021 年 5 月 27 日，约 9 万用户。CDN 配置更新里多了一行改缓存策略，9 分钟检出、31 分钟下线 App。
+- Railway，2026 年 3 月 30 日，约 3,000 用户。「A configuration update to enable Surrogate Keys, allowing us to cache assets on a per domain basis, accidentally enabled caching on domains that had it disabled.」修法里有一条「上线前做缓存行为的正反测试」。
+
+它们与我们唯一的结构差异是缓存的对象。他们缓存的是「边缘到用户」的响应，用户能直接看见，分钟到小时级被发现；我们缓存的是「Worker 到第三方」的子请求响应，完全静默，服务端日志里串号的登录与正常登录一模一样，一个多星期后才偶然撞上。这个差异决定了不能只靠「把配置改对」。
+
+**库层。** 上一节已经说了：没有实践。三层各自的责任边界是清楚的，出事的是部署者，而部署者手里唯一容易核对的口径只有一个：zone 上没有缓存规则。
+
+## 探针：怎么在自己的 zone 上验证
+
+独立 Worker，一次调用内用两枚不同账号的 token 顺序请求同一个 URL，回报身份、`cf-cache-status`、`age` 和 `x-github-request-id`。两次拿到同一身份、request-id 相同就是命中。请求头照抄你登录库的写法，`compatibility_date` 与生产对齐，先部署到 `workers.dev` 作对照，再通过自定义域挂到生产 zone 上跑。
+
+```js
+const TARGET = 'https://api.github.com/user';
+const HEADER_KEYS = ['x-github-request-id', 'cf-cache-status', 'age', 'cache-control', 'vary'];
+
+export default {
+  async fetch(request, env) {
+    if (request.headers.get('x-probe-key') !== env.PROBE_KEY) return new Response('not found', { status: 404 });
+    const mode = new URL(request.url).searchParams.get('mode') || 'bare';
+    const results = [];
+    for (const which of ['A', 'B']) {
+      const token = which === 'A' ? env.PAT_A : env.PAT_B;
+      const init = { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'cache-probe' } };
+      if (mode === 'cf0') init.cf = { cacheTtl: 0 };
+      if (mode === 'nostore') init.cache = 'no-store';
+      try {
+        const res = await fetch(TARGET, init);
+        const body = await res.json().catch(() => null);
+        const headers = Object.fromEntries(HEADER_KEYS.map((k) => [k, res.headers.get(k)]));
+        results.push({ which, status: res.status, identity: { login: body?.login, id: body?.id }, headers });
+      } catch (e) {
+        results.push({ which, error: String(e) });
+      }
+    }
+    return Response.json({ colo: request.cf?.colo, mode, results });
+  },
+};
+```
+
+两个注意点。第一，它有副作用：规则生效时，裸模式会把探针账号的资料放进缓存两小时，期间真实用户登录会被串进探针账号。用没有数据的小号、在 zone 上只跑一次、跑完立刻停用规则并 Purge Everything、事后核对窗口内没有真实用户命中。第二，`mode` 参数就是用来把候选修法一个个测的，前面说的 `cacheTtl: 0` 和 `no-store` 两个结论都是它跑出来的。
+
+## 给读者的清单
+
+- **Worker 所在的 zone 不要有任何 Cache Rules 或 Page Rules。** 这是唯一容易核对的口径。规则处于 disabled 不算达标，一键即可恢复，要删除。官网需要缓存就把它放到另一个 zone，或者至少在规则的匹配条件里显式限定官网主机名，并在 Vary 设置里把默认动作设为 bypass，然后用探针验证子请求确实不再命中。
+- **加一道 push 触发的漂移检测。** 我们的做法是 GitHub Actions 在每次 push 时调 Cloudflare API 读 zone 的 `rulesets/phases/http_request_cache_settings/entrypoint`，规则数非零即红，鉴权失败单独算「无法判定」而不是放行。它只看结果不看行为，面板上点的、其他会话改的、别人改的都能查到。它是检测不是拦截，但把发现时间从「天」压到「分钟」。
+- **代码层的「不缓存」写法必须在挂 zone 的探针上验过。** `cacheTtl: 0` 是缓存并立即过期；`cache: "no-store"` 要 `cache_option_enabled`；`cf` 选项在 `request_cf_overrides_cache_rules` 之前会被 zone 规则压掉。三个标志都能在 `compatibility_flags` 里单独开，不必整体升 `compatibility_date`。
+- **身份不要只由一个「固定 URL + 用户凭据」的可缓存 GET 决定。** OIDC 之所以强制 UserInfo 的 `sub` 与 ID Token 的 `sub` 一致，就是因为「拿到的用户信息属于谁」需要两个独立来源交叉核对。纯 OAuth 没有第二来源，RFC 9700 §4.6.1 直说「There is no way to detect such an injection attack in pure-OAuth flows」。RFC 7662 的 introspection 形态（POST、client 凭据鉴权、响应标识 token 属主）是补这个来源的标准形状，GitHub 的 `POST /applications/{client_id}/token` 就是它。在 Cloudflare 上，缓存相关的 `cf` 选项全部注明「GET and HEAD only」，POST 子请求不受缓存规则影响。
+- **把子请求的 `cf-cache-status` 记进登录日志。** 这次事故最难受的一点是服务端没有任何一处记录它，串号的登录与正常登录完全无法区分。任何 HIT 即红，成本几乎为零。
+- **客户端不要用旧值盖住失败。** 我们的个人页在取 GitHub 数据失败时保留了上一次的数字，串号后看起来像刷新没生效而不是账号错了。宁可显示空，不要显示别人的。
+
+## 坑速查表
+
+| 症状 | 根因 | 修复 |
+|---|---|---|
+| 不同用户登录后拿到同一个人的第三方资料 | zone 级 Cache Rule 作用于 Worker 子请求，cache key 只有 URL | 删除规则、Purge Everything、撤销受影响会话；探针复核 |
+| 探针在 `workers.dev` 上全是 DYNAMIC | `workers.dev` 不属于任何 zone，不受规则影响 | 探针必须挂到生产 zone 的子域上跑 |
+| 串号跨多个数据中心出现 | Smart Tiered Cache 为第三方 origin 选了共享的上层节点 | 同上，机制一致 |
+| 加了 `cf: { cacheTtl: 0 }` 反而看到 MISS / REVALIDATED | `cacheTtl` 是强制缓存，0 是立即过期 | 不要用它表达「不缓存」 |
+| 加了 `cache: "no-store"` 抛 `The 'cache' field ... is not implemented` | 兼容日期早于 2024-11-11 | 单独开 `cache_option_enabled` 标志 |
+| `cf` 选项写了但仍被缓存 | 兼容日期早于 2025-04-02 时 Cache Rules 优先于 `request.cf` | 开 `request_cf_overrides_cache_rules`，并用探针验证 |
+| 想按 URL purge 第三方响应找不到条目 | 条目挂在子请求的主机名下，不在你的 zone 里 | 只能 Purge Everything |
+| 服务端日志看不出哪次登录串了 | 没有记录子请求的 `cf-cache-status` | 记进登录事件，HIT 即告警 |
+
+Cloudflare 在这件事上的默认值是对的，一条模板就能把它改错，而改错之后没有任何东西会告诉你。零缓存规则、push 触发的漂移检测、身份来源不唯一，三条守住任意一条，这次事故都不会持续一个多星期。
