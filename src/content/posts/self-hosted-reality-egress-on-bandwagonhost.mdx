@@ -60,6 +60,16 @@ GitHub / Anthropic / Maven Central ...
 
 我选了搬瓦工年付：有货、后台能迁机房、年付省心。DMIT 的差异化在月付和免费换 IP，断货时是很好的替补。
 
+这个套餐（CN2 GIA-E 20G）值得多说两句，因为它的规格看起来寒酸，值钱的部分在线路上：
+
+- **硬件**：2 核共享 Xeon、1 GB 内存、20 GB SSD、1 TB 月流量、2.5 Gbps 端口。Xray 常驻约 30 MB 内存、负载接近零，开发用途一个月流量 20–50 GB，手机加上也用不完
+- **线路**：电信 CN2 GIA（AS4809）双向直连，联通走电信提供的企业级传输通道，移动走 CMIN2 回程，三网都做了优化——家里宽带和手机流量是哪家运营商都一样；和 Google 直接对等互联
+- **机房迁移**：可在 KiwiVM 后台免费迁到 10+ 个机房（DC9 同为 CN2 GIA，另有日本软银、荷兰等），迁移会换 IP，这是晚高峰变差或 IP 被封时的零成本手段
+- **面板**：装系统、快照、自动备份、反向 DNS、网页 SSH 都在 KiwiVM 里；严格 self-managed，官方只保 99.95% 在线率
+- **不是什么**：没有 SLA 赔付（那是贵一档的 ECOMMERCE SLA 系列），共享 CPU 不适合跑编译或业务；续费保价
+
+线路和大规格版本完全相同，作为个人出口，最低档刚好够。
+
 > 提示：服务商官网的价格和库存变化很快，下单前以购物车页为准。DMIT 官网套了 Cloudflare 人机验证，用代理访问经常过不去，直连即可。
 
 ### 协议：VLESS + Reality
@@ -297,6 +307,34 @@ rules:
 
 `servername` 必须和服务端 `serverNames` 一致；服务端换了伪装目标，这里要同步改。
 
+### 规则是怎么分流的
+
+思路只有一句话：**能证明是"国内"的直连，其余一律走代理**。匹配从上到下，命中即停：
+
+| 顺序 | 规则 | 出口 | 作用 |
+|---|---|---|---|
+| 1 | `GEOSITE,private` | DIRECT | `localhost`、`.local` 等本地域名 |
+| 2 | `GEOIP,LAN,no-resolve` | DIRECT | 局域网 IP |
+| 3 | `GEOSITE,cn` | DIRECT | 域名在中国站点列表里（`.cn` 后缀、淘宝、腾讯、字节等几十万条，子域名自动包含） |
+| 4 | `GEOIP,CN,no-resolve` | DIRECT | 目标 IP 属于中国大陆 IP 段——兜域名规则没收录的国内小站 |
+| 5 | `MATCH` | PROXY | 以上都没命中 → 走 VPS |
+
+两个数据源都不用自己维护：`geosite` 来自 v2fly 社区的 domain-list-community，`geoip` 来自 MaxMind/ipip 的国家 IP 段，随客户端版本更新。
+
+`no-resolve` 这个标记值得单独理解：它的含义是「连接目标是域名时跳过本条、不去解析 IP」。浏览器和 CLI 经 HTTP 代理时传的都是域名，所以 GEOIP 规则不会为了判定去做一次 DNS 解析——既省一次解析，也避免了「国内 DNS 把海外域名解析到国内 CDN 节点、被误判直连」这类事故。
+
+这直接关系到一个很多人关心的问题：**Claude、ChatGPT 这类对代理敏感的服务，会不会有部分请求漏到直连？** 在这套规则下不会。它们的域名（`claude.ai`、`api.anthropic.com`、`chatgpt.com`、`openai.com`）不在 `geosite:cn` 里，IP 在 Cloudflare 和 AWS 美国段，域名连接又因 `no-resolve` 不走 GEOIP 判定，只能落到兜底走代理。可以从 Clash 的日志里取证：
+
+```
+[TCP] 127.0.0.1:50912 --> claude.ai:443 match Match using PROXY[MY-LA]
+[TCP] 127.0.0.1:50915 --> api.anthropic.com:443 match Match using PROXY[MY-LA]
+[TCP] 127.0.0.1:50921 --> chatgpt.com:443 match Match using PROXY[MY-LA]
+```
+
+真正会触发这类服务风控的是另外两件事：**同一账号在多个设备上用不同出口**（短时间内 IP 在不同国家/城市之间跳），以及**手机没开代理时直接打开 App**（请求从国内运营商 IP 打到对方）。自建出口天然解决前者——所有设备都用同一台 VPS、同一个出口 IP，从服务方视角你就是一个固定在洛杉矶的用户；后者靠手机端代理常开 + 开机自启来规避。
+
+边界情况：国内公司用海外域名 + 海外 CDN 的站点会走代理（通常反而更快）；海外公司在国内有 CDN 节点的（Apple、微软部分域名）会命中 `GEOIP,CN` 直连，都属正常。极少数走错的，在 Clash「连接」页看它匹配了哪条，加一行 `DOMAIN-SUFFIX,xxx.com,DIRECT` 做例外即可。
+
 ### 2. 在界面上做两件事
 
 - 首页「代理模式」选**规则**
@@ -348,6 +386,10 @@ networksetup -getsecurewebproxy Wi-Fi     # Enabled: Yes, Port: 7897
 vless://<UUID>@<VPS IP>:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=dl.google.com&fp=chrome&pbk=<PublicKey>&sid=<shortId>&type=tcp#MY-LA
 ```
 
+Android 推荐 v2rayNG（Xray 内核，扫码即用）——注意原版 Clash for Android 已归档且不支持 VLESS/Reality，Shadowsocks 客户端只认 SS 协议，两者都用不了。导入后在「路由设置」选预设**「绕过局域网及中国大陆地址」**，它和电脑那套规则是同一个思路，多了两条：`geosite:google` 强制代理（防个别 Google 域名解析到国内 IP 被误判），以及阻断 UDP 443（拦掉 QUIC，逼浏览器回落 TCP 走代理，否则这部分 UDP 分流不可控）。
+
+手机端代理可以常开：命中国内规则的流量从手机自己的网络直接出去，多出的开销只是本机进程转一手，淘宝、微信、视频体验和不开时一样；功耗一天约多 1–2%。少数银行类 App 会弹"检测到 VPN"，用时关一下即可。
+
 日常维护表：
 
 | 事件 | 处理 |
@@ -367,6 +409,7 @@ vless://<UUID>@<VPS IP>:443?encryption=none&flow=xtls-rprx-vision&security=reali
 - [ ] Reality `dest` 的证书链不超过 4 KB
 - [ ] 服务端先用 Xray 自己当客户端自测通过，再碰第三方客户端
 - [ ] Clash 的模式、开机自启在界面上点过
+- [ ] 所有设备（电脑、手机）都指向同一台 VPS，不混用其他节点
 - [ ] 旧客户端保留两周冷备，晚高峰验收通过再卸载
 
 ## 坑速查表
