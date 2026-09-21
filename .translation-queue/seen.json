@@ -179,8 +179,13 @@
         "status": "pending",
         "discoveredAt": "2026-09-14"
     },
+    "https://www.anthropic.com/institute/measuring-pace-of-ai-development": {
+        "lastmod": "2026-09-21T04:34:20.134Z",
+        "status": "pending",
+        "discoveredAt": "2026-09-21"
+    },
     "https://www.anthropic.com/institute/recursive-self-improvement": {
-        "lastmod": "2026-09-14T04:35:41.850Z",
+        "lastmod": "2026-09-21T04:34:20.134Z",
         "status": "outdated",
         "discoveredAt": "2026-06-05",
         "translatedSlug": "when-ai-builds-itself",
