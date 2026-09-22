@@ -1,0 +1,103 @@
+---
+title: 搬瓦工 VPS IP 被墙：人工修复手册
+type: original
+authorship: ai-led
+publishDate: 2026-09-22
+description: 自建出口上线四天后 IP 被墙。这篇是写给自己的修复手册，按顺序给出判定是否被墙的三条命令、为什么被墙的 VPS 走不了 KiwiVM 免费迁机房只能付费换 IP、换完后服务端与电脑手机两端各要改什么。全文只依赖国内直连能访问的资源，没有代理也能照做。
+tags:
+  - VPS
+  - Xray
+  - Clash
+  - 网络
+  - 运维
+  - 故障排查
+---
+
+适用场景：自建节点（搬瓦工 DC6，VLESS + Reality，部署过程见[上一篇](/posts/self-hosted-reality-egress-on-bandwagonhost/)）突然全端不通，需要本人独立完成修复。全文步骤只依赖国内直连能访问的资源。
+
+首次执行记录：2026-09-22，原 IP 被墙，付费换新 IP 后恢复，全程约 40 分钟（其中等官方处理 7 分钟）。
+
+## 1. 判定是不是 IP 被墙（3 分钟）
+
+在终端直接跑（终端不走代理，结果可信；不要用 curl 判断，它会继承环境里的代理变量）：
+
+```sh
+IP=<当前 VPS IP>           # 以 KiwiVM 面板为准
+ping -c 4 $IP             # 被墙：100% 丢包
+nc -z -G 5 -v $IP 443     # 被墙：timed out
+nc -z -G 5 -v $IP 22      # 被墙：timed out
+ping -c 2 ${IP%.*}.1      # 同网段邻居：应能通，说明线路正常、只封了这个 IP
+```
+
+再开浏览器访问 `https://ping.pe/<IP>`：被墙的特征是 China 段的探测点全部 100% 丢包，其他国家全部 0%。
+
+三条都符合就是 IP 被墙，直接进第 2 步。不符合的情况：
+
+| 现象 | 含义 | 处理 |
+|---|---|---|
+| ping.pe 全球都不通 | 机器宕机或防火墙问题 | 登 KiwiVM 看状态，必要时 Restart |
+| 邻居 IP 也不通 | 本地线路问题 | 换网络（手机热点）再测 |
+| 22 通、443 不通 | Xray 挂了 | SSH 上去 `systemctl restart xray` |
+
+## 2. 换 IP（付费，7.39 美元）
+
+**不要走 KiwiVM 的 "Migrate to another DC"**。被墙的 VPS 点进去会报 `Migration backend is currently not available for this VPS`，反复重试无用，2026-09-22 实测两次同一参考码。
+
+1. 打开客户区 `https://bandwagonhost.com/clientarea.php`，用注册邮箱 + 客户区密码登录。主站打不开时用官方镜像 `https://bwh81.net`。
+2. 进 `https://bandwagonhost.com/ipchange.php`，在服务列表旁点 **Request IP Change**。
+3. 系统自动开工单并生成账单，账单页点 **Make payment** 付款。
+4. 等待。官方承诺付款后 24 小时内处理，实际 7 分钟就完成了。工单关闭时回复里会写明新 IP；同时会收到邮件。
+5. 拿到新 IP 后重跑第 1 步的 ping / nc / ping.pe 验证。新 IP 也可能是二手被墙 IP，验不过就再提一次申请。
+
+补充：KiwiVM 面板 `https://kiwivm.64clouds.com` 登录用的是 **Server IP + KiwiVM 密码**，不是邮箱。密码忘了从客户区 Services 里点 "KiwiVM Control Panel" 免密进入。
+
+## 3. 服务端
+
+不用动。Xray 监听 0.0.0.0，网卡是 DHCP，nftables 不绑 IP，换 IP 后机器会自动重启并带上新 IP。
+
+想确认的话直接 SSH 新 IP：
+
+```sh
+ssh root@<新IP> 'systemctl is-active xray; ip -4 addr show eth0 | grep inet'
+```
+
+首次会提示新主机密钥，输 yes 即可。
+
+## 4. 电脑端
+
+### 4.1 Clash Verge
+
+改本地 profile 的 server 字段：
+
+- GUI 方式：订阅页 → 右键该 profile → 编辑文件 → 把 `server:` 后的旧 IP 改成新 IP → 保存，Verge 会自动重载。
+- 文件方式：`~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/<profile>.yaml`，改完在 GUI 里重新选一次该 profile。
+
+验证：
+
+```sh
+curl -x http://127.0.0.1:7897 -s https://api.ipify.org   # 应输出新 IP
+```
+
+### 4.2 代理环境变量
+
+凡是把代理端口写进环境变量的工具（例如 Claude Code 的 settings.json），若修复期间临时改过端口，改回 `http://127.0.0.1:7897`。改完需要重开会话才生效。
+
+### 4.3 其他
+
+- 手机分享链接 `~/.config/bwh/vless-link.txt`：把链接里 `@旧IP:443` 改成新 IP。要重新生成二维码：`qrencode -o ~/.config/bwh/vless-qr.png -s 8 -m 2 < ~/.config/bwh/vless-link.txt`
+- SSH 旧记录：`ssh-keygen -R <旧IP>`
+- Gradle、IDE 的代理配置只写端口不写 IP，不用动。
+
+## 5. 手机端（v2rayNG）
+
+1. 打开 v2rayNG，点节点条目右侧的铅笔图标。
+2. 把「地址 (address)」改成新 IP，其余不动，点右上角对勾保存。
+3. 回到列表，点右下角启动按钮。底部显示「已连接」、状态栏出现 VPN 标识即可。
+4. 验证：随便开一个境外站点；或电脑上 SSH 到 VPS 跑 `journalctl -u xray --since "1 minute ago" | grep accepted`，能看到来自手机运营商或家宽 IP 的连接。
+
+不要扫码新增配置，会产生重复条目，还得回头删旧的。
+
+## 6. 收尾
+
+- 退出临时用的备用出口。
+- 更新自己的笔记里记录的 VPS IP 与日期，下次排查才不会拿旧 IP 起手。
