@@ -1,0 +1,357 @@
+---
+title: Clash Verge 与公司 VPN 共存：内网自动可达、外网统一走自建节点
+type: original
+authorship: ai-led
+publishDate: 2026-10-12
+description: 同一台 Mac 上同时跑 Clash Verge（TUN 模式）和公司 VPN，结果在家能上内网、到公司就不行，改完又反过来。这篇讲清两者在 DNS、路由表、fake-ip 三个层面怎么互相打架，按操作顺序给出一套在公司和在家都不用切换的配置：内网交给系统路由和 VPN，外网统一走自建节点，连 SSH、Gradle、Node 这类不读代理设置的工具也一并收口。文末附只读自检脚本和坑速查表。
+tags:
+  - Clash
+  - 网络
+  - VPN
+  - 故障排查
+---
+
+最终状态：一台 Mac 上 Clash Verge（TUN 模式）和公司 VPN 同时常驻。**在公司还是在家，都不需要切换任何配置**：内网 GitLab 的 HTTPS 和 SSH 直接可用；外网流量统一走自建节点，包括浏览器、终端、SSH 访问 GitHub、Gradle、Node。整套状态由一个只读脚本 30 秒自检完毕。
+
+这是自建出口系列的第三篇。[第一篇](/posts/self-hosted-reality-egress-on-bandwagonhost/)讲怎么搭节点，[第二篇](/posts/bwh-ip-blocked-runbook/)讲 IP 被墙后怎么修，这篇讲**节点和公司 VPN 怎么共存**。按操作顺序分为：**摸清现状 → 消除 fake-ip 冲突 → 配置内网分流 → 内网绕过代理 → 收口不走代理的工具 → 自检**。如果你是带着"开了 Clash 公司内网就打不开"搜到这里，可以先看[全局一节](#全局两个接管者三层交互)的三条机制，再直接查文末的坑速查表。
+
+本文用到的示例值（换成你自己的即可）：
+
+| 角色 | 示例值 |
+|---|---|
+| 公司内网域名 | `corp.example.com`、`corp.example.net` |
+| 内网 Git | `git.corp.example.com` → `172.16.4.10` |
+| 内网 DNS | `172.16.0.53`、`172.16.0.54` |
+| 办公室网段（本机物理网卡） | `172.16.100.0/24` |
+| Clash 代理端口 | `7897` |
+
+## 全局：两个接管者，三层交互
+
+一台机器上有三个参与方：
+
+| 组件 | 网卡 | 负责什么 |
+|---|---|---|
+| Clash Verge（mihomo 内核） | `utun5` 和本地端口 `127.0.0.1:7897` | 默认接管所有流量，按规则分流 |
+| 公司 VPN | `utun0`（本例 `10.251.1.1`） | 系统首选 DNS，加上它下发的一组精确路由 |
+| 物理网卡 | `en0` | Clash 的 DIRECT 出口；在办公室时直通内网 |
+
+一个请求从发起到出去要经过四个关口：
+
+```
+程序发起请求
+ ├─ 走代理（浏览器跟随系统代理 / 终端读 https_proxy）
+ │     目标在绕过名单？ ── 否 → 127.0.0.1:7897 → Clash 规则 → 节点 / DIRECT
+ │                        └ 是 ┐
+ └─ 不走代理（ssh、JVM、Node 原生 fetch……） ─────┤
+                                                 ↓
+                              系统 DNS（VPN 的 DNS 排第一）
+                                                 ↓
+                              系统路由表（最长前缀匹配）
+                   ├─ VPN 的精确路由 / VPN 的 fake-ip 段 → utun0 → 公司
+                   ├─ 本机网段 → en0
+                   └─ 其余全部（1/8、128/1 …）→ utun5 → Clash 规则
+```
+
+理解下面三条机制，后面每一步配置的原因就清楚了：
+
+- **路由表按最长前缀匹配，VPN 的路由永远比 TUN 更优先**。Clash TUN 用 `1/8`、`2/7` …… `128.0/1` 这类很宽的路由来覆盖全网，而 VPN 下发的是 `/32`、`/16` 这类精确路由。所以 VPN 想接管的流量 Clash 拿不到，其余的才归 Clash。这意味着**不需要在 TUN 里为 VPN 做任何排除**。
+- **两边都在做 fake-ip DNS，而且默认地址段相同**。公司 VPN 会把一部分域名解析成它自己的假 IP，并把 `198.18.0.0/16`、`198.19.0.0/16` 两段路由指向 utun0。Clash 的 `fake-ip-range` 默认也是 `198.18.0.1/16`。地址段重叠时，Clash 分配出去的假 IP 会被系统路由送进 VPN。
+- **"走不走代理"决定了 VPN 能不能截获域名**。走代理的程序是把**域名**交给 Clash，由 Clash 自己解析；不走代理的程序则先问系统 DNS，也就是先问 VPN。所以同一个 `github.com`，浏览器访问会走节点，`ssh git@github.com` 却可能走公司出口。
+
+> 关于 TUN：第一篇建议客户端不开 TUN。这里开启的原因是：只有 TUN 才能让 ssh 这类不读代理设置的工具也进入 Clash 的规则。代价就是要处理和 VPN 的上述交互，也就是这篇的全部内容。
+
+## 阶段一：摸清现状
+
+**目标**：搞清楚目标地址被谁解析、走哪张网卡。动手改之前先确认，别凭感觉改规则。
+
+```sh
+scutil --dns | grep -E 'nameserver|if_index' | head   # DNS 顺序：VPN 的 DNS 是否排第一
+netstat -rn -f inet | grep -E 'utun|default'           # 谁占了哪些路由
+dscacheutil -q host -a name git.corp.example.com       # 系统解析结果
+route -n get 172.16.4.10 | grep -E 'gateway|interface' # 这个 IP 实际走哪张网卡
+```
+
+**最有用的一步是绕开 Clash，绑定网卡直接测**：
+
+```sh
+curl -sS --noproxy '*' --interface en0   -o /dev/null -w '%{http_code}\n' https://git.corp.example.com
+curl -sS --noproxy '*' --interface utun0 -o /dev/null -w '%{http_code}\n' https://git.corp.example.com
+```
+
+哪张网卡能返回正常的状态码（本例是 302），就说明那条物理路径是通的。在办公室时，`en0` 通常能直达内网，而 VPN 不转发这部分流量。
+
+### ✅ 本阶段验证
+
+你能回答这三个问题：内网域名解析出来是什么 IP？这个 IP 当前走哪张网卡？哪张网卡实际能通？
+
+### 踩坑提示
+
+- **`ping` 通、`nc` 端口通，不代表真的能连上**。TUN 模式（gvisor 栈）下，TCP 握手由 Clash 在本地完成，`nc -z` 永远显示成功。判断连通性要看完整的 HTTPS 请求，比如 `curl` 有没有拿到状态码。
+- **`SSL_ERROR_SYSCALL` 往往不是证书问题**，而是 Clash 接了连接，出站却失败了，客户端看到的就是连接中途被断开。
+
+## 阶段二：消除 fake-ip 冲突
+
+**目标**：Clash 分配的假 IP 一定要回到 Clash，不能被 VPN 截走。
+
+先确认有没有冲突：
+
+```sh
+netstat -rn -f inet | grep '^198\.1[89]'           # 有 utun0 的条目，说明 VPN 占用了这两段
+dig +short example.org @114.114.114.114            # 被 Clash 截获，拿到的是 Clash 的假 IP
+route -n get <上一步的假 IP> | grep interface       # 冲突时显示 utun0，正常应该是 Clash 的 utun
+```
+
+有冲突时，在 Clash Verge 里打开 **订阅 → 右键你的配置 → 扩展覆写配置**，把 Clash 的 fake-ip 换到不冲突的地址段：
+
+```yaml
+dns:
+  fake-ip-range: 28.0.0.1/8
+```
+
+`28.0.0.0/8` 是 mihomo 社区常用的替代段：它不在私网范围内，Clash TUN 的 `16/4` 路由也覆盖了它。保存后右键配置 → **重新激活**，让新的地址段生效。
+
+### ✅ 本阶段验证
+
+```sh
+dig +short example.org @114.114.114.114   # 应返回 28.x.x.x
+route -n get 28.0.0.5 | grep interface    # 应是 Clash 的 utun（本例 utun5），不能是 utun0
+```
+
+### 踩坑提示
+
+- **这个冲突不会直接报错，所以很难发现**：浏览器走的是系统代理，不经过假 IP，看起来一切正常。只有 ssh、CLI 这类不走代理的程序，访问外网时会时好时坏，具体取决于 VPN 愿不愿意转发。
+
+## 阶段三：配置内网分流
+
+**目标**：Clash 遇到内网域名和内网 IP 时走 DIRECT，并且 Clash 自己能把内网域名解析出来。
+
+**规则**。很多订阅本身就带有这些规则，没有的话就在**编辑规则**里加到最前面：
+
+```yaml
+prepend:
+  - DOMAIN-SUFFIX,corp.example.com,DIRECT
+  - DOMAIN-SUFFIX,corp.example.net,DIRECT
+```
+
+内网 IP 段由订阅里的 `GEOIP,LAN,DIRECT` 覆盖，包括 `10/8`、`172.16/12` 和 `192.168/16`。
+
+**DNS**。在扩展覆写配置里，和阶段二的内容合并在一起：
+
+```yaml
+dns:
+  fake-ip-range: 28.0.0.1/8
+  fake-ip-filter-mode: blacklist
+  fake-ip-filter:
+    - '+.corp.example.com'
+    - '+.corp.example.net'
+  nameserver-policy:
+    '+.corp.example.com':
+      - 172.16.0.53
+      - 172.16.0.54
+    '+.corp.example.net':
+      - 172.16.0.53
+      - 172.16.0.54
+```
+
+- `fake-ip-filter`：内网域名不分配假 IP，直接返回真实地址，这样系统路由表才能按真实 IP 做判断。
+- `nameserver-policy`：内网域名交给公司 DNS 解析。地址后面**不要**加 `#某个出口`，让 Clash 默认的出站逻辑去处理。
+
+如果某个内网域名在两边解析结果不一致，可以再用 `hosts` 固定一个地址。这一步是可选的，一般用不到。
+
+### ✅ 本阶段验证
+
+```sh
+dig +short git.corp.example.com @114.114.114.114     # 被 Clash 截获，应返回真实内网 IP
+curl -sI https://git.corp.example.com | head -1      # 应返回 2xx 或 3xx
+```
+
+### 踩坑提示
+
+- **不要用写死网卡的出口来"修"内网**。常见的错误修法是新建一个 `type: direct` + `interface-name: utun0` 的出口，再把内网规则指向它。在家时这样确实能通，但到了公司，VPN 不转发办公网可以直达的地址，内网就又断了。这种固定出口只能适应一种网络环境。另外，utun 的编号在重启或重连后也可能变化。
+- **`nameserver-policy` 不要设成 `system`**。VPN 的 DNS 对它不认识的域名会转发给上游，而这个查询又会被 Clash 的 `dns-hijack` 截获，Clash 再去问 `system`，也就是 VPN 的 DNS……最后在两者之间来回绕圈直到超时，表现为内网域名突然全部解析失败。
+- **Clash Verge 修改增强配置的顺序**：每次保存都会对整份配置做校验。如果要删掉一个出口，必须**先删引用它的规则，再删出口本身**。顺序反了会报 `proxy [xxx] not found`，这次修改会被整体撤销，之前的配置不受影响。
+
+## 阶段四：让内网流量绕过代理
+
+**目标**：浏览器和终端访问内网时不经过 Clash，直接用系统 DNS 和路由表。这样内网怎么走，交给办公网或 VPN 来决定。
+
+**系统代理绕过**：设置 → 系统代理右边的齿轮 → 关闭**始终使用默认绕过**。这时下方会出现可编辑的列表，默认条目已经带在里面了，保留不动。在输入框里依次输入 `*.corp.example.com`、`*.corp.example.net`，每次点**新建**添加一条，最后点保存。
+
+**终端**：在 `~/.zshrc` 里 `export https_proxy=...` 那一行的下面加上：
+
+```sh
+export no_proxy=localhost,127.0.0.1,.corp.example.com,.corp.example.net,172.16.0.0/12,10.0.0.0/8 NO_PROXY=localhost,127.0.0.1,.corp.example.com,.corp.example.net,172.16.0.0/12,10.0.0.0/8
+```
+
+同时设置大写和小写，因为有的工具只认其中一种。
+
+### ✅ 本阶段验证
+
+```sh
+scutil --proxy | grep corp            # 应能看到这两条绕过规则
+curl -sI https://git.corp.example.com | head -1
+ssh -T git@git.corp.example.com       # 应显示 GitLab 的欢迎信息
+```
+
+### 踩坑提示
+
+- 在 Verge 的绕过设置里，**一次只能添加一条**，不要用逗号把多条拼在一起。
+- 在**始终使用默认绕过**开启的状态下，界面上没有输入框，这是正常现象，并不是没有这个功能。
+
+## 阶段五：收口不走代理的工具
+
+**目标**：那些不读代理设置的工具，访问外网时也走节点，而不是被 VPN 带去公司出口。
+
+首先确认 VPN 接管了哪些域名。只要系统 DNS 返回的是 `198.18/198.19` 段的地址，就说明这个域名被 VPN 接管了（阶段二之后，Clash 的假 IP 已经是 `28.x`，两者不会混淆）：
+
+```sh
+for h in github.com ssh.github.com docker.io repo1.maven.org registry.npmjs.org google.com; do
+  printf '%-22s %s\n' $h "$(dscacheutil -q host -a name $h | awk '/ip_address/{print $2; exit}')"
+done
+```
+
+本例中，GitHub、Docker Hub、Maven Central 以及部分社交站点被接管，npm、PyPI、Google 则没有。这份名单由 VPN 后台下发，各公司不同，而且随时可能变化。
+
+**一条请求要两个条件同时满足，才会被 VPN 带走**：程序本身不走代理，并且目标域名在接管名单里。按工具逐个处理：
+
+| 工具 | 默认行为 | 处理方式 |
+|---|---|---|
+| 浏览器、终端 curl/git https | 走代理 | 不需要处理 |
+| `ssh git@github.com` | 不读代理变量 | `~/.ssh/config` 加 `ProxyCommand` |
+| Gradle | 读 `gradle.properties` | 补上 `nonProxyHosts` |
+| Node 24+ 的原生 fetch/http | 忽略 `HTTP_PROXY` | 设置 `NODE_USE_ENV_PROXY=1` |
+| 普通 Java 程序 | 默认不走代理 | 按需用 `-D` 参数配置，不建议设成全局 |
+| Docker、Maven | 各自有独立的代理配置 | 用到时再配，判断方法见下文 |
+
+**SSH**（`~/.ssh/config`）：
+
+```
+Host github.com
+    HostName ssh.github.com
+    Port 443
+    User git
+    ProxyCommand nc -X 5 -x 127.0.0.1:7897 %h %p
+```
+
+`nc -X 5` 会把**域名**通过 SOCKS5 交给 Clash，由 Clash 自己解析，这样就绕开了 VPN DNS。内网 Git 不要加这一行。
+
+**Gradle**（`~/.gradle/gradle.properties`）：如果已经配置了 `proxyHost` 和 `proxyPort`，还要补上内网例外，否则访问内网 Maven 仓库的请求也会进代理：
+
+```properties
+systemProp.http.nonProxyHosts=localhost|127.0.0.1|*.corp.example.com|*.corp.example.net|172.16.*|10.*
+systemProp.https.nonProxyHosts=localhost|127.0.0.1|*.corp.example.com|*.corp.example.net|172.16.*|10.*
+```
+
+**Node**（`~/.zshrc`）：
+
+```sh
+export NODE_USE_ENV_PROXY=1   # Node ≥ 24.5 / 22.21：让原生 fetch 遵循 https_proxy 与 no_proxy
+```
+
+**接入新工具时怎么判断**：先用 `--noproxy` 或者干脆不设代理变量，访问一个被接管的域名，看出口 IP。如果出口和节点不一致，就去查这个工具自己的代理配置项。配置时别忘了**同时加上内网例外**，否则会把内网也带进代理。
+
+### ✅ 本阶段验证
+
+```sh
+ssh -v -T git@github.com 2>&1 | grep -E 'proxy command|Authenticated'   # 应显示 (via proxy)
+node -e 'fetch("https://api.ipify.org").then(r=>r.text()).then(console.log)'   # 应是节点 IP
+```
+
+Gradle 可以用一个 init 脚本，在它自己的 JVM 里检查 `ProxySelector` 的选择结果：外网域名应选代理，内网域名应选 `DIRECT`。本例实测外网返回节点 IP，内网返回 302；再用 `./gradlew buildEnvironment --refresh-dependencies` 强制刷新依赖，也能正常下载。
+
+### 踩坑提示
+
+- 加了 `ProxyCommand` 之后，**SSH 访问 GitHub 就依赖 Clash 了**：Clash 没开时会连不上。这是统一出口的代价，排查时先确认 Verge 在运行。
+- 浏览器访问 GitHub 很快、`git clone git@github.com` 却很慢或被审计，几乎都是这一节说的原因。
+- 不读代理设置的 GUI App 不在本节的覆盖范围内。遇到具体的 App 再单独处理。
+
+## 阶段六：自检
+
+**目标**：一条命令确认整套配置都在正常工作。换网络、升级 Verge 或者重装 VPN 之后都跑一遍。
+
+脚本是**只读**的，不会修改任何配置。建议先下载下来看一遍再运行：
+
+```sh
+curl -fsSL https://harlon.wang/scripts/clash-verge-with-corporate-vpn/netcheck.sh -o netcheck.sh
+# 修改脚本顶部「配置区」：内网域名后缀、内网 Git 主机、代理端口、节点出口 IP
+bash netcheck.sh
+```
+
+本例的输出（已脱敏）：
+
+```
+【1. Clash 是否在工作（阶段二）】
+  ✅ 代理端口 127.0.0.1:7897 在监听
+  ✅ TUN 已开启，Clash 网卡是 utun5
+【2. 公司 VPN 与 fake-ip 冲突（阶段二）】
+  · 系统首选 DNS：10.251.1.1（经 utun0）
+  ✅ Clash fake-ip 28.0.0.37 经 utun5 回到 Clash
+  · VPN 占用的 198.18/15 路由：198.18.0/16→utun0 198.19.0/16→utun0
+【3. 内网访问（阶段三、四）】
+  ✅ 系统代理绕过包含 *.corp.example.com
+  ✅ 终端 no_proxy 包含 .corp.example.com
+  ✅ git.corp.example.com 解析为 172.16.4.10（出口网卡 utun5）
+  ✅ HTTPS git.corp.example.com → 302
+  ✅ SSH git.corp.example.com：Welcome to GitLab, @you!
+【4. 外网出口（阶段三）】
+  ✅ 走代理的出口：<节点 IP>
+【5. VPN 接管的外网域名（阶段五）】
+  ⚠️  被 VPN 接管（不走代理的程序会经公司出口）：github.com ssh.github.com raw.githubusercontent.com docker.io repo1.maven.org
+【6. 不走代理的工具（阶段五）】
+  ✅ SSH github.com 经代理：认证成功
+  ✅ Gradle 已配代理和内网例外
+  ✅ Node 已开启 NODE_USE_ENV_PROXY
+```
+
+第 5 项的 ⚠️ 只是提示：这些域名被 VPN 接管了，但第 6 项的工具都已经收口，所以实际不受影响。
+
+## 在公司与在家
+
+这套配置不区分网络环境，**换地方时什么都不用改**：
+
+| 场景 | 内网怎么走 | 外网怎么走 |
+|---|---|---|
+| 在公司 | 内网 IP 进入 Clash，被 `GEOIP,LAN` 命中，走 DIRECT，从物理网卡直达 | Clash 规则 → 节点 |
+| 在家 | 由 VPN 接管，系统路由和 VPN 的精确路由优先生效 | Clash 规则 → 节点 |
+
+换完网络后跑一遍 `netcheck.sh`，第 3 项全部是 ✅ 就说明没问题。
+
+## 回滚
+
+所有改动都是增量的，订阅主文件没有改动。回滚时按下面的顺序撤销：
+
+1. Verge：清空扩展覆写配置和规则增强的内容；恢复「始终使用默认绕过」。
+2. 删除 `~/.zshrc` 里的 `no_proxy` 和 `NODE_USE_ENV_PROXY` 两行。
+3. 删除 `~/.ssh/config` 里的 `ProxyCommand` 那一行。
+4. 删除 `~/.gradle/gradle.properties` 里的两行 `nonProxyHosts`。
+
+建议每次改动前都先 `cp` 一份 `.bak-日期` 备份，回滚时直接还原，最省事。
+
+## 操作前 Checklist
+
+- [ ] 确认了 VPN 的 DNS 地址，以及它占用了哪些路由（`scutil --dns`、`netstat -rn`）
+- [ ] Clash 的 `fake-ip-range` 不在 VPN 占用的地址段里
+- [ ] 内网规则指向 `DIRECT`，没有写死网卡的出口
+- [ ] `nameserver-policy` 指向公司 DNS，没有用 `system`
+- [ ] 系统代理绕过和终端 `no_proxy` 都包含内网域名
+- [ ] 不走代理的工具（SSH、Gradle、Node）已经逐个收口，并且都带着内网例外
+- [ ] 改动前已备份，`netcheck.sh` 全部通过
+
+## 坑速查表
+
+| 症状 | 根因 | 修复 | 章节 |
+|---|---|---|---|
+| 开着 Clash 时内网打不开，`curl` 报 `SSL_ERROR_SYSCALL` | Clash 接了连接，但出站失败（写死的出口不可达） | 内网规则改为 `DIRECT`，并让内网流量绕过代理 | 阶段三、四 |
+| 在家能上内网，到公司就不行（或者反过来） | 内网出口写死在了某张网卡（`interface-name: utunX`）上 | 去掉固定出口，交给系统路由表决定 | 阶段三 |
+| `ping` 和 `nc` 都通，但内网服务打不开 | TUN 在本地完成了 TCP 握手，这只是假象 | 以 `curl` 拿到状态码为准，再绑网卡对照测试 | 阶段一 |
+| 改完配置后内网域名全部解析失败 | `nameserver-policy: system` 和 VPN DNS 之间形成了回环 | 改为直接指向公司 DNS 的 IP | 阶段三 |
+| 浏览器正常，但 ssh 或 CLI 访问外网时好时坏 | Clash 的 fake-ip 段和 VPN 重叠，假 IP 被路由进了 VPN | `fake-ip-range: 28.0.0.1/8` | 阶段二 |
+| 浏览器访问 GitHub 走节点，`git@github.com` 却走公司出口 | VPN 的 DNS 接管了这个域名，而 SSH 不走代理 | 给 SSH 加 `ProxyCommand nc -X 5` | 阶段五 |
+| Gradle 外网正常，但内网仓库下载失败 | 配了 `proxyHost`，但缺少 `nonProxyHosts` | 补上内网例外 | 阶段五 |
+| Node 脚本没有走节点 | 原生 fetch 不读 `HTTP_PROXY` | `NODE_USE_ENV_PROXY=1` | 阶段五 |
+| Verge 保存时报 `proxy [xxx] not found`，修改被撤销 | 先删了出口，但规则还在引用它 | 先删规则，再删出口 | 阶段三 |
+| 系统代理设置里找不到绕过的输入框 | 「始终使用默认绕过」处于开启状态 | 关掉它，然后逐条新建 | 阶段四 |
+
+## 最后
+
+回头看，问题的根源不在任何一条规则写错了，而在于**两个工具都想当系统网络的接管者**。它们都劫持 DNS、都用 fake-ip、都往路由表里写路由。真正可行的做法不是让其中一个压过另一个，而是给它们划清分工：**VPN 管它下发的精确路由和它接管的域名，Clash 管剩下的所有流量；内网怎么走交给系统路由表决定，不在 Clash 里写死。** 分工清楚之后，"在家"和"在公司"就不再需要两套配置了。
