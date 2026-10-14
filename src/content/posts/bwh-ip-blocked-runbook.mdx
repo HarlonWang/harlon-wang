@@ -45,7 +45,7 @@ ping -c 2 ${IP%.*}.1      # 同网段邻居：应能通，说明线路正常、�
 
 1. 打开客户区 `https://bandwagonhost.com/clientarea.php`，用注册邮箱 + 客户区密码登录。主站打不开时用官方镜像 `https://bwh81.net`。
 2. 进 `https://bandwagonhost.com/ipchange.php`，在服务列表旁点 **Request IP Change**。
-3. 系统自动开工单并生成账单，账单页点 **Make payment** 付款。
+3. 打开 Home 标签页，找到账单页进去后点 **Make payment** 付款。
 4. 等待。官方承诺付款后 24 小时内处理，实际 7 分钟就完成了。工单关闭时回复里会写明新 IP；同时会收到邮件。
 5. 拿到新 IP 后重跑第 1 步的 ping / nc / ping.pe 验证。新 IP 也可能是二手被墙 IP，验不过就再提一次申请。
 
@@ -81,12 +81,6 @@ curl -x http://127.0.0.1:7897 -s https://api.ipify.org   # 应输出新 IP
 ### 4.2 代理环境变量
 
 凡是把代理端口写进环境变量的工具（例如 Claude Code 的 settings.json），若修复期间临时改过端口，改回 `http://127.0.0.1:7897`。改完需要重开会话才生效。
-
-### 4.3 其他
-
-- 手机分享链接 `~/.config/bwh/vless-link.txt`：把链接里 `@旧IP:443` 改成新 IP。要重新生成二维码：`qrencode -o ~/.config/bwh/vless-qr.png -s 8 -m 2 < ~/.config/bwh/vless-link.txt`
-- SSH 旧记录：`ssh-keygen -R <旧IP>`
-- Gradle、IDE 的代理配置只写端口不写 IP，不用动。
 
 ## 5. 手机端（v2rayNG）
 
