@@ -273,13 +273,31 @@ Gradle 可以用一个 init 脚本，在它自己的 JVM 里检查 `ProxySelecto
 
 ```sh
 curl -fsSL https://harlon.wang/scripts/clash-verge-with-corporate-vpn/netcheck.sh -o netcheck.sh
-# 修改脚本顶部「配置区」：内网域名后缀、内网 Git 主机、代理端口、节点出口 IP
 bash netcheck.sh
+```
+
+不需要改脚本。它会自动推断配置项，再逐项问你确认，直接回车就采用 `[]` 中的值：
+
+- **内网域名后缀**：从 Verge 运行时配置的 `nameserver-policy` 中找出 DNS 指向私网 IP 的那些域名，也就是阶段三配置的内容。
+- **内网 Git 主机**：先找 `~/.ssh/known_hosts` 里连过的 `*git*.内网后缀`，找不到再尝试 `git.*`、`gitlab.*`。
+- **代理端口**：读 `mixed-port`。
+- **节点出口 IP**：可选。填了就比对，不填只打印。
+
+跑完会打印一行带参数的命令，下次直接复制运行，就不会再询问了：
+
+```sh
+CORP_SUFFIXES="corp.example.com corp.example.net" CORP_GIT_HOST=git.corp.example.com bash netcheck.sh
 ```
 
 本例的输出（已脱敏）：
 
 ```
+【0. 配置（自动推断，直接回车采用 [] 中的值）】
+  · 读取 Verge 运行时配置：~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml
+  内网域名后缀（空格分隔） [corp.example.com corp.example.net]:
+  内网 Git 主机 [git.corp.example.com]:
+  节点出口 IP（可选，用于比对） [回车跳过]:
+  · 内网后缀：corp.example.com corp.example.net    内网 Git：git.corp.example.com    代理端口：7897    出口 IP：不比对
 【1. Clash 是否在工作（阶段二）】
   ✅ 代理端口 127.0.0.1:7897 在监听
   ✅ TUN 已开启，Clash 网卡是 utun5
