@@ -141,16 +141,8 @@ if [ -z "$via_proxy" ]; then bad "走代理访问外网失败"
 elif [ -n "$EXPECTED_EXIT_IP" ] && [ "$via_proxy" != "$EXPECTED_EXIT_IP" ]; then bad "走代理的出口是 ${via_proxy}，不是预期的 $EXPECTED_EXIT_IP"
 else ok "走代理的出口：$via_proxy"; fi
 
-sec "5. VPN 接管的外网域名（阶段五）"
-taken=()
-for d in "${PROBE_DOMAINS[@]}"; do
-  ip=$(dscacheutil -q host -a name "$d" | awk '/ip_address/{print $2; exit}')
-  if in_fake_range "$ip" && [ "$(iface_of "$ip")" != "$CLASH_IF" ]; then taken+=("$d"); fi
-done
-if [ ${#taken[@]} -eq 0 ]; then ok "样本域名都没有被 VPN 接管"
-else warn "被 VPN 接管（不走代理的程序会经公司出口）：${taken[*]}"; fi
-
-sec "6. 不走代理的工具（阶段五）"
+sec "5. 不走代理的工具（阶段五）"
+TOOLS_ISSUES=$((WARN + FAIL))
 if grep -A6 -E '^Host .*github\.com' ~/.ssh/config 2>/dev/null | grep -q ProxyCommand; then
   out=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -T git@github.com 2>&1 </dev/null | head -1)
   [[ "$out" == *successfully* ]] && ok "SSH github.com 经代理：认证成功" || bad "SSH github.com：$out"
@@ -168,6 +160,23 @@ if [ -f ~/.gradle/gradle.properties ]; then
 fi
 if command -v node >/dev/null; then
   [ "${NODE_USE_ENV_PROXY:-}" = "1" ] && ok "Node 已开启 NODE_USE_ENV_PROXY" || warn "Node 未开启 NODE_USE_ENV_PROXY：原生 fetch 不读代理变量"
+fi
+TOOLS_ISSUES=$((WARN + FAIL - TOOLS_ISSUES))
+
+sec "6. VPN 接管的外网域名（阶段五）"
+taken=()
+for d in "${PROBE_DOMAINS[@]}"; do
+  ip=$(resolve "$d")
+  if in_fake_range "$ip" && [ "$(iface_of "$ip")" != "$CLASH_IF" ]; then taken+=("$d"); fi
+done
+# 被接管本身不是配置错误：第 5 项的工具都已走代理时只做提示，否则才算 ⚠️
+if [ ${#taken[@]} -eq 0 ]; then ok "样本域名都没有被 VPN 接管"
+elif [ "$TOOLS_ISSUES" -eq 0 ]; then
+  echo "  · 被 VPN 接管：${taken[*]}"
+  echo "    第 5 项的工具已走代理，不受影响；未检查的工具（如 docker、mvn）不走代理时仍会经公司出口"
+else
+  warn "被 VPN 接管：${taken[*]}"
+  echo "    走代理的程序不受影响；第 5 项未通过的工具访问这些域名会经公司出口"
 fi
 
 echo

@@ -313,15 +313,16 @@ CORP_SUFFIXES="corp.example.com corp.example.net" CORP_GIT_HOST=git.corp.example
   ✅ SSH git.corp.example.com：Welcome to GitLab, @you!
 【4. 外网出口（阶段三）】
   ✅ 走代理的出口：<节点 IP>
-【5. VPN 接管的外网域名（阶段五）】
-  ⚠️  被 VPN 接管（不走代理的程序会经公司出口）：github.com ssh.github.com raw.githubusercontent.com docker.io repo1.maven.org
-【6. 不走代理的工具（阶段五）】
+【5. 不走代理的工具（阶段五）】
   ✅ SSH github.com 经代理：认证成功
   ✅ Gradle 已配代理和内网例外
   ✅ Node 已开启 NODE_USE_ENV_PROXY
+【6. VPN 接管的外网域名（阶段五）】
+  · 被 VPN 接管：github.com ssh.github.com raw.githubusercontent.com docker.io repo1.maven.org
+    第 5 项的工具已走代理，不受影响；未检查的工具（如 docker、mvn）不走代理时仍会经公司出口
 ```
 
-第 5 项的 ⚠️ 只是提示：这些域名被 VPN 接管了，但第 6 项的工具都已经收口，所以实际不受影响。
+第 6 项列出的是被 VPN 接管的域名。被接管本身不是配置错误，因为这份名单由公司 VPN 下发，你改不了。真正要关心的是：访问这些域名的工具有没有改成走代理。所以第 5 项全部通过时，第 6 项只是一条 `·` 提示；只要第 5 项有一项没通过，第 6 项就会变成 ⚠️。
 
 ## 在公司与在家
 
