@@ -30,19 +30,19 @@ in_fake_range() { [[ "$1" =~ ^198\.1[89]\. ]]; }
 sec "1. Clash 是否在工作（阶段二）"
 if nc -z -G 2 127.0.0.1 "$PROXY_PORT" 2>/dev/null; then ok "代理端口 127.0.0.1:$PROXY_PORT 在监听"; else bad "代理端口 $PROXY_PORT 没有监听：Clash Verge 没开？"; fi
 CLASH_IF=$(iface_of 1.1.1.1)
-if [[ "$CLASH_IF" == utun* ]]; then ok "TUN 已开启，Clash 网卡是 $CLASH_IF"; else warn "1.1.1.1 走的是 $CLASH_IF，TUN 可能没开（不开 TUN 时第 3、6 项结论不适用）"; fi
+if [[ "$CLASH_IF" == utun* ]]; then ok "TUN 已开启，Clash 网卡是 $CLASH_IF"; else warn "1.1.1.1 走的是 ${CLASH_IF}，TUN 可能没开（不开 TUN 时第 3、6 项结论不适用）"; fi
 
 sec "2. 公司 VPN 与 fake-ip 冲突（阶段二）"
 VPN_DNS=$(scutil --dns | awk '/nameserver\[0\]/{print $3; exit}')
 VPN_IF=$(iface_of "$VPN_DNS")
-echo "  · 系统首选 DNS：$VPN_DNS（经 $VPN_IF）"
+echo "  · 系统首选 DNS：${VPN_DNS}（经 ${VPN_IF}）"
 CLASH_FAKE=$(dig +short +time=2 +tries=1 netcheck-probe.example.org @114.114.114.114 2>/dev/null | tail -1)
 if [ -z "$CLASH_FAKE" ]; then
   warn "拿不到 Clash 的 fake-ip（DNS 劫持没生效？）"
 else
   FAKE_IF=$(iface_of "$CLASH_FAKE")
   if [ "$FAKE_IF" = "$CLASH_IF" ]; then ok "Clash fake-ip $CLASH_FAKE 经 $FAKE_IF 回到 Clash"
-  else bad "Clash fake-ip $CLASH_FAKE 被路由到 $FAKE_IF（不是 Clash）：fake-ip 段与 VPN 冲突，改 fake-ip-range"; fi
+  else bad "Clash fake-ip $CLASH_FAKE 被路由到 ${FAKE_IF}（不是 Clash）：fake-ip 段与 VPN 冲突，改 fake-ip-range"; fi
 fi
 VPN_FAKE_ROUTES=$(netstat -rn -f inet | awk '$1 ~ /^198\.1[89]/ && $NF !~ /^'"$CLASH_IF"'$/ {print $1"→"$NF}' | xargs)
 [ -n "$VPN_FAKE_ROUTES" ] && echo "  · VPN 占用的 198.18/15 路由：$VPN_FAKE_ROUTES"
@@ -53,16 +53,16 @@ for s in "${CORP_SUFFIXES[@]}"; do
   [[ ",${no_proxy:-}," == *",.$s,"* ]] && ok "终端 no_proxy 包含 .$s" || bad "终端 no_proxy 缺少 .$s"
 done
 CORP_IP=$(dscacheutil -q host -a name "$CORP_GIT_HOST" | awk '/ip_address/{print $2; exit}')
-if [ -n "$CORP_IP" ]; then ok "$CORP_GIT_HOST 解析为 $CORP_IP（出口网卡 $(iface_of "$CORP_IP")）"; else bad "$CORP_GIT_HOST 解析失败：检查 nameserver-policy"; fi
+if [ -n "$CORP_IP" ]; then ok "$CORP_GIT_HOST 解析为 ${CORP_IP}（出口网卡 $(iface_of "$CORP_IP")）"; else bad "$CORP_GIT_HOST 解析失败：检查 nameserver-policy"; fi
 code=$(curl -s -o /dev/null -m 8 -w '%{http_code}' "https://$CORP_GIT_HOST" 2>/dev/null)
 [[ "$code" =~ ^[23] ]] && ok "HTTPS $CORP_GIT_HOST → $code" || bad "HTTPS $CORP_GIT_HOST → ${code:-超时}"
 out=$(ssh -o BatchMode=yes -o ConnectTimeout=8 -T "git@$CORP_GIT_HOST" 2>&1 | head -1)
-[[ "$out" =~ Welcome|successfully ]] && ok "SSH $CORP_GIT_HOST：$out" || bad "SSH $CORP_GIT_HOST：$out"
+[[ "$out" =~ Welcome|successfully ]] && ok "SSH ${CORP_GIT_HOST}：$out" || bad "SSH ${CORP_GIT_HOST}：$out"
 
 sec "4. 外网出口（阶段三）"
 via_proxy=$(curl -s -m 8 https://api.ipify.org 2>/dev/null)
 if [ -z "$via_proxy" ]; then bad "走代理访问外网失败"
-elif [ -n "$EXPECTED_EXIT_IP" ] && [ "$via_proxy" != "$EXPECTED_EXIT_IP" ]; then bad "走代理的出口是 $via_proxy，不是预期的 $EXPECTED_EXIT_IP"
+elif [ -n "$EXPECTED_EXIT_IP" ] && [ "$via_proxy" != "$EXPECTED_EXIT_IP" ]; then bad "走代理的出口是 ${via_proxy}，不是预期的 $EXPECTED_EXIT_IP"
 else ok "走代理的出口：$via_proxy"; fi
 
 sec "5. VPN 接管的外网域名（阶段五）"
