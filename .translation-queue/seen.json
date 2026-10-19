@@ -160,6 +160,11 @@
         "translatedSlug": "multi-agent-research-system",
         "translatedAt": "2026-05-28"
     },
+    "https://www.anthropic.com/engineering/redesigning-source-control": {
+        "lastmod": "2026-10-15T18:21:28.000Z",
+        "status": "pending",
+        "discoveredAt": "2026-10-19"
+    },
     "https://www.anthropic.com/engineering/swe-bench-sonnet": {
         "lastmod": "2025-03-19T20:43:04.000Z",
         "status": "translated",
