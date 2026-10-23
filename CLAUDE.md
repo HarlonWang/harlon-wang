@@ -20,7 +20,8 @@
 当用户说「把某篇同步/发到掘金」时：
 
 1. **定位文章**：按 slug（文件名去 `.mdx`）或标题关键词找到 `src/content/posts/*.mdx`。
-2. **确定分类/标签**：用户指定就用；没指定就读文章内容，从 `scripts/juejin-taxonomy.json` 里挑合适的**分类（8 选 1）+ 标签**，建议给用户确认。标签必须在 taxonomy 表内（表外的掘金没有 ID，发不了）。
+2. **确定分类/标签**：用户指定就用；没指定就读文章内容，从 `scripts/juejin-taxonomy.json` 里挑合适的**分类（8 选 1）+ 标签**，建议给用户确认。标签必须在 taxonomy 表内（表外的掘金没有 ID，发不了），**最多 3 个**（超过会在更新草稿时报 err_no=4031，此时草稿已建好，会留下一个空草稿）。
+   - 文章里有 `<video>` 时：掘金不渲染视频，同目录放一个同名 `.gif` 会被同步成动图，没有则同步成「封面图 + 链接」。GIF 帧率不超过 50 fps（浏览器把 ≤10 ms 的帧当 100 ms 播）。
 3. **加 frontmatter**：给文章加 `juejin: { category, tags }` 对象（其存在即同步开关，只发原创）。
 4. **发布**：`node scripts/juejin-sync.mjs <slug>`，回用户掘金链接。已发过的会自动跳过（`.juejin-synced.json` 记账），`--force` 可强制重发。
 

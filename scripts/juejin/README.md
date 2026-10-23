@@ -31,7 +31,7 @@ juejin:
 扫描 *.mdx → 筛出带 juejin 且未发过的 → 逐篇转换 → 发布 → 记账
 ```
 
-- **转换**（`transform.mjs`）：剥 frontmatter、根相对图片/链接改写为 `https://harlon.wang/...`、正文末尾附首发脚注；`title` / `description` 直接作标题和摘要。
+- **转换**（`transform.mjs`）：剥 frontmatter、`<video>` 换成同名 `.gif` 动图（没有 gif 时换成封面图链接）、带 style 的说明 `<p>` 转斜体、根相对图片/链接改写为 `https://harlon.wang/...`、正文末尾附首发脚注；`title` / `description` 直接作标题和摘要。围栏代码块里的内容不转换。
 - **只发一次**：`../../.juejin-synced.json` 记 slug→article_id，已发跳过。此文件提交进 git。
 - **含 JSX/MDX 组件的文章**会被自动跳过并告警（当纯 Markdown 会坏）。
 
