@@ -133,3 +133,9 @@ test('buildArticle 中视频封面与链接改写为绝对地址', () => {
     });
     assert.match(article.markContent, /\[!\[▶ 点击播放视频\]\(https:\/\/harlon\.wang\/p\.webp\)\]\(https:\/\/harlon\.wang\/v\.mp4\)/);
 });
+
+test('convertVideos 视频旁有同名 gif 时换成动图', () => {
+    const body = '<video src="/images/demo/a.mp4" poster="/images/demo/a-poster.webp"></video>';
+    assert.equal(convertVideos(body, (p) => p === '/images/demo/a.gif'), '![动图](/images/demo/a.gif)');
+    assert.equal(convertVideos(body, () => false), '[![▶ 点击播放视频](/images/demo/a-poster.webp)](/images/demo/a.mp4)');
+});

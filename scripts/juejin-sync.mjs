@@ -15,6 +15,7 @@
 // 鉴权：仓库根 .env 提供 JUEJIN_AID / JUEJIN_UUID / JUEJIN_COOKIE / JUEJIN_CSRF_TOKEN
 
 import { readFile, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { parsePost, hasMdxSyntax, buildArticle } from './juejin/transform.mjs';
@@ -26,6 +27,7 @@ const SITE_URL = 'https://harlon.wang';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const POSTS_DIR = join(HERE, '..', 'src', 'content', 'posts');
 const ENV_PATH = join(HERE, '..', '.env');
+const PUBLIC_DIR = join(HERE, '..', 'public');
 
 function parseArgs(argv) {
     const flags = new Set(argv.filter((a) => a.startsWith('--')));
@@ -57,7 +59,13 @@ async function syncOne(slug, { force }, ledger) {
     const categoryId = await resolveCategory(frontmatter.juejin.category);
     const tagIds = await resolveTags(frontmatter.juejin.tags);
     const columnIds = frontmatter.juejin.column ? [String(frontmatter.juejin.column)] : [];
-    const article = buildArticle({ frontmatter, body, slug, siteUrl: SITE_URL });
+    const article = buildArticle({
+        frontmatter,
+        body,
+        slug,
+        siteUrl: SITE_URL,
+        assetExists: (path) => existsSync(join(PUBLIC_DIR, path)),
+    });
 
     const result = await publish({ ...article, categoryId, tagIds, columnIds });
 

@@ -43,11 +43,14 @@ function outsideFences(body, fn) {
 }
 
 // 掘金不渲染 <video>，原样发出去会显示成一段 HTML 源码。
-// 换成「封面图 + 链接到视频文件」，读者点封面在浏览器里播放；没有 poster 时退化成文字链接。
-export function convertVideos(body) {
+// 视频旁有同名 .gif（assetExists 判定）就换成动图，在掘金文中直接播放；
+// 否则换成「封面图 + 链接到视频文件」，没有 poster 时退化成文字链接。
+export function convertVideos(body, assetExists = () => false) {
     return outsideFences(body, (text) => text.replace(/<video\b([^>]*)>[\s\S]*?<\/video>/g, (_, attrs) => {
         const src = attrs.match(/\ssrc=(["'])(.*?)\1/)?.[2];
         if (!src) return '';
+        const gif = src.replace(/\.(mp4|webm|mov)$/i, '.gif');
+        if (gif !== src && assetExists(gif)) return `![动图](${gif})`;
         const poster = attrs.match(/\sposter=(["'])(.*?)\1/)?.[2];
         return poster ? `[![▶ 点击播放视频](${poster})](${src})` : `[▶ 点击播放视频](${src})`;
     }));
@@ -89,12 +92,13 @@ export function buildBrief(description) {
 }
 
 // 组装掘金发布所需的内容字段（不含分类/标签 ID，那些由 taxonomy 解析后合并）。
-export function buildArticle({ frontmatter, body, slug, siteUrl }) {
+// assetExists：根相对路径（如 /images/x.gif）对应的站点静态文件是否存在，由调用方做 I/O
+export function buildArticle({ frontmatter, body, slug, siteUrl, assetExists }) {
     if (!frontmatter.title) {
         throw new Error(`文章缺少 title：${slug}`);
     }
     // 先转换视频与说明，生成的根相对路径再统一改写成绝对地址
-    const withImages = rewriteImages(convertCaptions(convertVideos(body)), siteUrl);
+    const withImages = rewriteImages(convertCaptions(convertVideos(body, assetExists)), siteUrl);
     const markContent = appendFooter(withImages, slug, siteUrl);
     return {
         title: String(frontmatter.title),
