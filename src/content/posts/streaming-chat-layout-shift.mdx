@@ -1,0 +1,345 @@
+---
+title: 流式回复结尾的那一下闪：逐帧定位 Compose 聊天列表的三处布局跳动
+type: original
+authorship: ai-led
+publishDate: 2026-10-23
+description: AI 回复流式输出到结尾时，消息会上下闪一下。用原始帧录屏 + 逐帧位移量化，把这「一下」拆成三个互相独立的根因：setext 标题瞬态、落库换 id 导致整条消息重建、块级公式写完前显示源码，并逐个修掉。附排查脚本、Checklist 与坑速查表。
+tags:
+  - Android
+  - Compose
+  - Kotlin Multiplatform
+  - 性能优化
+  - 调试
+---
+
+给 [chatbase-kmp](https://github.com/HarlonWang/chatbase-kmp)（一个 KMP 聊天 UI 库）接入 LaTeX 公式渲染后，跑基准测试时发现：**AI 回复流式输出到快结束的时候，整条消息会上下闪一下**。原速下只看得到「抖了一下」，左边是修复前，右边是修复后：
+
+<video
+  src="/images/streaming-chat-layout-shift/opener-realtime.mp4"
+  poster="/images/streaming-chat-layout-shift/opener-realtime-poster.webp"
+  autoplay loop muted playsinline preload="metadata"
+  style="max-width: 100%; display: block; margin: 1rem auto;"
+></video>
+
+<p style="text-align: center; font-size: 0.9em; color: #666;">原速循环播放，小米 13（120 Hz）。每格顶部标注原始帧号与相对上一帧的位移，红框是内容往下跳的帧。</p>
+
+最后查出来，这「一下」其实是三个互相独立的问题在 200 ms 内先后发生：
+
+| 根因 | main 分支（未接 LaTeX）是否存在 | 修复前 | 修复后 |
+|---|---|---|---|
+| 流式切块恰好停在单独的 `=` / `-` 上，上一行被解析成 setext 标题 | 存在 | 下移 56 dp | 只往上推 |
+| 回复结束时消息换了 id，LazyColumn 把整条消息销毁重建 | 存在，但看不出闪 | 下移 61 dp，伴随一次 75 ms 的长帧 | 消失 |
+| 块级公式写完前按源码显示，闭合后换成更矮的公式 | 不存在 | 下移 52 dp | 只往上推 |
+
+修完后，在 Redmi 8A（60 Hz）和小米 13（120 Hz）上录同一个场景，整段录屏里**没有一帧内容往下跳**。
+
+这篇按排查顺序拆解：**录屏 → 逐帧量化 → A/B 拆根因 → 逐个修 → 回归验证**。读完你能带走两样东西：一套把「闪一下」变成具体帧号和 dp 数值的方法（附可直接用的脚本），以及流式渲染里三类很常见的布局跳动来源。如果你正带着某个症状搜到这里，文末有坑速查表。
+
+## 全局：排查链路与三条机制
+
+```
+固定场景录屏（原始帧率，不重采样）
+    ↓ 逐帧估算内容的竖向位移
+找出「内容往下跳」的帧，对着截图确认
+    ↓ A/B：main vs LaTeX 分支，60 Hz vs 120 Hz
+拆成三个独立根因
+    ↓ 逐个修，每个都用同一套录屏 + 脚本验证
+两台设备复录：整段无下移帧
+```
+
+理解这次的问题，要先知道三件事：
+
+- **reverseLayout 的列表底部是固定的**。聊天列表通常用 `LazyColumn(reverseLayout = true)`，最新消息贴着底部。流式吐字时消息变高，内容往上推，这是正常的；**消息只要在任何一帧变矮，就会表现为内容往下跳**。所以判据很简单：只往上推是对的，往下移就是问题
+- **LazyColumn 靠 key 认列表项**。key 一变，Compose 会认为旧的列表项没了、来了一个新的，于是销毁旧的、从零创建新的，里面所有 `remember` 状态、异步加载的内容全部重来
+- **流式中间态会被当成完整 Markdown 解析**。每到一块新内容，整段文本都会重新解析一次。半截的文本在 Markdown 语法里可能是另一种结构，下一块到达后又变回去
+
+## 阶段一：把闪动录下来
+
+目标：拿到一段**可复现、帧率足够高**的录屏，并且修复前后能用完全相同的条件重录。
+
+### 固定场景
+
+闪动和内容强相关，所以要用确定性的输入。sample 里有一个假引擎，每 30 ms 吐 24 个字，回复内容固定（三段，每段 10 个行内公式 + 3 个块级公式）。每次发送，切块的位置都完全一样，修复前后的录屏可以逐帧对比。
+
+### 录屏
+
+```bash
+# 高刷手机先把最低刷新率钉在 120，否则静止时会降频，录屏帧率跟着掉
+adb shell settings put system min_refresh_rate 120.0
+
+# 开始录屏，发送消息，等回复结束
+adb shell screenrecord --bit-rate 40000000 --time-limit 9 /sdcard/rec.mp4
+adb pull /sdcard/rec.mp4 .
+
+# 测完恢复（原来没有这个设置就删掉）
+adb shell settings delete system min_refresh_rate
+```
+
+✅ **验证**：看原始帧的时间间隔，中位数应该接近屏幕刷新周期（120 Hz 约 8.3 ms，60 Hz 约 16.7 ms）。
+
+```bash
+ffprobe -v error -select_streams v:0 -show_entries frame=pts_time -of csv=p=0 rec.mp4
+```
+
+这次小米 13 的中位数是 8.5 ms，Redmi 8A 是 17.5 ms，都跑满了刷新率。
+
+> **踩坑提示**
+> - `screenrecord` 是**可变帧率**的，只在画面更新时出帧。录屏里出现几秒的帧间隔不是掉帧，而是画面静止。流式期间常见 24 到 42 ms 的间隔，也只是因为假引擎每 30 ms 才吐一块，不是卡顿
+> - 用 `uiautomator dump` 找按钮坐标，在流式期间会失败：它要等界面空闲，而流式期间界面一直在更新。需要在流式中操作（比如双击回复打开全屏查看器）时，直接用固定坐标
+> - 用两条 `adb shell input tap` 模拟双击太慢：每条命令都要启动一个进程，间隔超过了双击判定时间。改成在同一个 shell 里并行起两个进程、错开 80 ms：`adb shell "input tap X Y & sleep 0.08; input tap X Y; wait"`
+
+## 阶段二：逐帧量化位移
+
+目标：把「闪了一下」变成「第几帧、下移多少 dp」。
+
+### 不要重采样
+
+我在[上一篇](/posts/verifying-ui-animations-with-frame-montage/)里推荐先用 `fps=30` 把录屏重采样到固定帧率再抽帧拼图，那是为了让两段录屏的「第 N 帧」对应同一时刻。但**要抓只停留一两帧的闪跳，重采样会把它合并掉**。
+
+这次就踩到了：一开始按 25 fps 抽帧做统计，结论是「main 分支结尾没有跳动」。改用原始帧逐帧分析后才发现，main 在结尾前 30 ms 有一次下移 56 dp 的跳动，持续一帧。所以分析时一律按原始帧解码：
+
+```bash
+ffmpeg -i rec.mp4 -fps_mode passthrough -vf "crop=...,scale=360:-1,format=gray" -f rawvideo -
+```
+
+### 用行亮度剖面估算位移
+
+思路：把每一帧压成一条「行亮度剖面」，也就是每一行像素的平均亮度。内容整体上下平移时，剖面也跟着平移。在上下若干像素内平移上一帧的剖面，误差最小的偏移量，就是这一帧内容的竖向位移。
+
+```python
+prev, cur = frames[i - 1].mean(axis=1), frames[i].mean(axis=1)   # 行亮度剖面
+best = min(range(-h // 4, h // 4 + 1), key=lambda s: mse(shifted(prev, s), cur))
+shift_dp = best * px_per_scaled / density                        # 正值 = 内容往下移
+```
+
+完整脚本：[frame-shift.py](/scripts/streaming-chat-layout-shift/frame-shift.py)，只依赖 ffmpeg 和 numpy：
+
+```bash
+python3 frame-shift.py rec.mp4 --density 2.75
+# 帧  156  t=  2.347s  间隔   33.6 ms  差异 19.69  位移  +55.6 dp  <- 下移
+# 帧  158  t=  2.455s  间隔   74.9 ms  差异 16.15  位移  +61.1 dp  <- 下移
+```
+
+`--density` 是设备的 dp 缩放（`adb shell wm density` 的值除以 160）。换算成 dp 后，不同分辨率的设备可以直接比较：这次 setext 那一跳在两台设备上都是 56 dp。
+
+✅ **验证**：对报出来的每一帧，拼出前后几帧的截图对照确认。下面的图都是这样生成的：每格标注帧号、和上一帧的时间间隔、位移，红线是固定参考线，红框是内容往下跳的帧。
+
+> **踩坑提示**
+> - **键盘收起会产生误报**。发送消息后键盘收起、输入框往下滑，裁剪区域如果包含输入框，就会被算成位移。这次每段录屏开头都有一两帧这样的误报，下移 5 到 17 dp，对图一看消息内容根本没动。脚本的 `--top` / `--bottom` 可以只截列表区域，但报出来的帧还是要对着截图确认
+> - 位移估算假设「内容整体平移」。如果同一帧里既有平移又有局部变化（比如公式从源码换成渲染结果），数值只能作为参考，结论以截图为准
+
+## 阶段三：A/B 拆出根因
+
+目标：确认每一次跳动分别和什么有关。
+
+只看接入 LaTeX 后的录屏，结尾 200 ms 内有两次下移，很容易误以为是同一个问题。用两组对照拆开：
+
+| 对照 | 能回答的问题 |
+|---|---|
+| main（未接入 LaTeX）vs LaTeX 分支 | 跳动是不是接入 LaTeX 带来的 |
+| Redmi 8A（60 Hz）vs 小米 13（120 Hz） | 跳动是内容决定的，还是设备性能决定的 |
+
+结果：
+
+| 跳动 | main | LaTeX 分支 | 两台设备的区别 |
+|---|---|---|---|
+| 矩阵源码突然变成大号加粗标题，下一块到达后变回正文 | 有，下移 56 dp | 有，下移 56 dp | 位置、幅度完全一致，只是持续 2 帧和 1 帧的区别 → 由内容决定 |
+| 流式结束那一刻，整条消息的块级公式全部变空 | 没有 | 有，下移 61 dp | 快的设备空 1 帧但卡 75 ms，慢的设备空 2 帧 |
+
+第一个和 LaTeX 无关，main 本来就有；第二个只在 LaTeX 分支出现。修完这两个之后，结尾又露出了第三个（下文第 3 节）。
+
+## 阶段四：逐个修
+
+### 1. 半截行被当成 setext 标题
+
+<video
+  src="/images/streaming-chat-layout-shift/setext-slow.mp4"
+  poster="/images/streaming-chat-layout-shift/setext-slow-poster.webp"
+  autoplay loop muted playsinline preload="metadata"
+  style="max-width: 100%; display: block; margin: 1rem auto;"
+></video>
+
+<p style="text-align: center; font-size: 0.9em; color: #666;">8× 慢放，main 分支。左：修复前；右：修复后。</p>
+
+![setext 瞬态修复前后：修复前帧 141 矩阵源码变成标题、帧 142 下移 56 dp；修复后一路上移](/images/streaming-chat-layout-shift/setext.webp)
+
+**根因**：CommonMark 规定，一行文字的下一行如果只有 `=`（或 `-`），上一行就是 setext 标题。回复里有一行 `= \left( \begin{matrix} ...`，切块恰好停在 `=` 后面。这一瞬间 `=` 单独成行，上一行的矩阵源码就被升格成了一级标题；下一块补上 ` \left(` 后，这一行不再是下划线，标题又降回正文。
+
+同样的事也会发生在 `-` 上：「以下几点：」换行后的 `- 列表项`，在只吐出 `-` 的那一刻，上一行会变成二级标题。真实模型输出里这种情况比 `=` 更常见。
+
+**修复**（[#4](https://github.com/HarlonWang/chatbase-kmp/pull/4)）：流式期间，最后一行如果还没写完、并且长得像 setext 下划线，先不交给解析器，等下一块到了再解析。
+
+```kotlin
+private val SETEXT_UNDERLINE = Regex("^[ \\t>]*(=+|-+)[ \\t]*$")
+
+internal fun String.withoutPendingSetextUnderline(): String {
+    val lineStart = lastIndexOf('\n') + 1
+    if (lineStart == 0) return this
+    return if (SETEXT_UNDERLINE.matches(substring(lineStart))) substring(0, lineStart) else this
+}
+```
+
+「流式中」这个状态放进了消息模型：`ChatMessage` 加 `streaming` 标记，流式占位为 `true`，定稿后为 `false`；`MarkdownText` 新增 `streaming` 参数，只在流式时做上面的处理。定稿内容完全按原文解析，真正的 setext 标题不受影响。
+
+这条规则是故意放宽的：行首允许空白和 `>`（覆盖引用块和嵌套列表），也不看上下文。两种出错的代价不对称：**误判只是让一行本来就还没写完的内容晚一块显示，漏判才会跳**。按上下文精确判断，等于在解析器前面再写一个 Markdown 解析器。
+
+✅ **验证**：Android（commonmark-java）和 iOS（cmark-gfm）两端都有单测确认「`\end{pmatrix}` 下一行是 `=`」会被解析成标题、修复后会暂缓；真机录屏修复后，帧 141 只上移 24 dp，再没有下移。
+
+### 2. 落库换 id，整条消息被重建
+
+<video
+  src="/images/streaming-chat-layout-shift/rebuild-slow.mp4"
+  poster="/images/streaming-chat-layout-shift/rebuild-slow-poster.webp"
+  autoplay loop muted playsinline preload="metadata"
+  style="max-width: 360px; width: 100%; display: block; margin: 1rem auto;"
+></video>
+
+<p style="text-align: center; font-size: 0.9em; color: #666;">8× 慢放，LaTeX 分支修复前。帧 158 和前一帧隔了 75 ms。</p>
+
+![修复前：流式结束那一刻，整条消息的块级公式全部变空，内容下移 61 dp](/images/streaming-chat-layout-shift/rebuild.webp)
+
+**根因**：流式期间，占位消息的 id 固定为 `-1`；回复结束时先落库，再把占位替换成带真实 id 的消息。而消息列表用 id 做 key（简化后的原写法）：
+
+```kotlin
+items(messages, key = { it.id }) { message -> MessageItem(message) }
+```
+
+key 从 `-1` 变成真实 id，LazyColumn 就把整个 `MessageItem` 销毁重建。重建后：
+
+- 正文和行内公式是同步测量、第一帧就画出来的，看不出变化
+- 块级公式用的是 latex 库的 `LatexAutoWrap`，**在后台解析，第一帧是空的**。整条消息的块级公式同时变空，消息变矮，内容往下跳；下一帧解析完又弹回去
+- 整条消息的行内公式在主线程上全部重新测量一遍，这就是那次 75 ms 的长帧
+
+main 分支同样会重建，只是内容都是同步渲染的，所以看不出闪。但它有另一个看得见的症状：**全屏查看器也是按 id 找消息的**，流式中双击回复打开查看器，回复一结束就找不到这条消息，查看器自己关掉了。
+
+![全屏查看器：修复前回复结束时自己关闭，修复后仍然打开](/images/streaming-chat-layout-shift/viewer.webp)
+
+**修复**（[#5](https://github.com/HarlonWang/chatbase-kmp/pull/5)）：把「UI 身份」和「存储 id」分开。占位和落库后的消息共用同一个 key。
+
+```kotlin
+data class ChatMessage(
+    val id: Long,
+    // ...
+    val uiKey: Long? = null,
+) {
+    val key: Long get() = uiKey ?: id
+}
+
+// 每次流式给占位分配一个新的负数 key（store 行 id 恒为正，不会撞号）
+ChatMessage(PLACEHOLDER_ID, Role.ASSISTANT, "", streaming = true, uiKey = --placeholderKey)
+
+// 落库替换时沿用占位的 key，成功和出错两种结局都一样
+messages.map { if (it.id == PLACEHOLDER_ID) replacement.copy(uiKey = it.key) else it }
+```
+
+列表和查看器都改用 `key` 定位消息。
+
+> **踩坑提示：key 不能写成默认值等于 id 的构造参数**
+>
+> 第一版写的是 `val key: Long = id`。新增的单测报「列表 key 不唯一」：存储层落库时用 `message.copy(id = newId)` 换 id，而 **data class 的 `copy` 不会重新计算默认参数**，所以 key 停在了旧值 0 上，所有消息共用 key 0。LazyColumn 遇到重复 key 会直接崩溃。改成计算属性 `uiKey ?: id`，谁换了 id，key 都会跟着变。
+
+✅ **验证**：
+
+- 单测：流式到定稿 id 改变、key 不变；失败时的错误条沿用占位 key；连续两轮回复后列表 key 唯一。其中「错误条沿用 key」那项一开始用的是同步抛错的假引擎，记下的其实是错误条自己的 key，等于自己和自己比；改成挂起的引擎，并临时去掉沿用逻辑，确认测试会失败
+- 真机：修复后流式结束那一刻，前面已经渲染好的公式全程都在，75 ms 的长帧也没了；查看器在回复结束后仍然打开
+
+### 3. 块级公式写完前显示源码
+
+修完上面两个，结尾还剩一次下移 52 dp。
+
+<video
+  src="/images/streaming-chat-layout-shift/pending-math-slow.mp4"
+  poster="/images/streaming-chat-layout-shift/pending-math-slow-poster.webp"
+  autoplay loop muted playsinline preload="metadata"
+  style="max-width: 100%; display: block; margin: 1rem auto;"
+></video>
+
+<p style="text-align: center; font-size: 0.9em; color: #666;">8× 慢放。左：未闭合时显示源码；右：未闭合时显示骨架占位。</p>
+
+![上：源码换成公式时下移 52 dp；下：骨架换成公式时上移 23 dp](/images/streaming-chat-layout-shift/pending-math.webp)
+
+**根因**：公式抽取层对「未闭合的定界符」一律按普通文本处理，所以流式中 `$$` 还没闭合时，显示的是 LaTeX 源码。最后一个矩阵公式的源码占 4 行，闭合后换成只有 2 行高的公式，消息变矮了，内容往下掉。这 52 dp 里：
+
+- 约 48 dp 是正常的内容变化：4 行源码本来就比 2 行公式高
+- 约 4 dp 是新建的公式第一帧为空：`MathBlock` 用预测量的高度托底，但托底高度比最终高度小一点
+
+前两段的矩阵公式闭合时，录屏里没有出现下移：同一块内容里紧接着还有后续文字，高度整体仍是增加的。到了回复结尾，后面没有内容可以抵消，就露出来了。
+
+**修复**（[#2](https://github.com/HarlonWang/chatbase-kmp/pull/2) 中的提交）：流式期间，未闭合的块级公式不显示源码，显示一条一个字高的骨架占位。占位比任何公式都矮，所以公式闭合时内容只会往上推。
+
+占位要放在公式原本所在的位置。如果简单地截断文档、在末尾追加，列表项、引用块里的公式就会先显示在容器外面，闭合后又跳回容器里。所以做法是让**公式扫描器在原位留一个「待定公式」占位**，后面的内容丢弃，再交给 Markdown 解析器：解析器会把它放进所在的列表项或引用块，回填时变成带 `pending` 标记的公式节点。
+
+```kotlin
+// 定界符之前只能是空白、引用符、列表标记：段落中间、链接地址里的 $$、\[ 不算
+private val DISPLAY_LINE_PREFIX = Regex("^[ \\t]*(?:(?:>|[-*+]|\\d{1,9}[.)])[ \\t]*)*$")
+
+private fun tryPendingDisplay(contentStart: Int): Boolean {
+    if (!streaming) return false
+    val rest = src.substring(contentStart)
+    if (!rest.isBlank() && crossesBlankLine(rest)) return false
+    val lineStart = src.lastIndexOf('\n', pos - 1) + 1
+    if (!DISPLAY_LINE_PREFIX.matches(src.substring(lineStart, pos))) return false
+    out.append(start).append(spans.size).append(end)          // 原位留占位符
+    spans.add(MathSpan(rest.trim(), display = true, source = src.substring(pos), pending = true))
+    pos = src.length                                          // 丢弃其后内容
+    return true
+}
+```
+
+渲染时，`pending` 的公式节点画骨架，其余照常：
+
+```kotlin
+is MdBlock.Math -> if (block.pending) PendingMathBlock(textStyle) else MathBlock(block.latex, textStyle)
+```
+
+「只认行首起头的定界符」这条规则来自代码审查：如果任何未闭合的 `$$`、`\[` 都算，链接地址 `[文档](https://example.test/\[)` 里的 `\[` 也会触发，整段后面的内容都会被换成骨架。模型输出的块级公式几乎都是单独起一行的，写在段落中间的 `$$` 保持原样显示源码即可。
+
+✅ **验证**：
+
+- 单测覆盖：未闭合的 `$$`、`\[`；引用块和有序列表里的未闭合公式，确认占位留在原容器；链接地址、段落中间、代码块、行内代码、跨空行五种情况，流式和非流式的解析结果完全一样。临时去掉行首判断后，链接地址那个用例会失败
+- 真机：骨架换成公式时上移 23 dp，公式画出来再上移 4 dp。之前那 4 dp 的空帧还在，只是方向变成了往上，看不出跳动
+
+## 回归验证
+
+三个修复都合入后，两台设备各录一次同样的场景，用同一个脚本分析：
+
+| 设备 | 内容下移的帧 | 结尾 |
+|---|---|---|
+| 小米 13（120 Hz） | 只有开头帧 7（17 dp），对图确认是键盘收起 | 骨架换成公式：上移 23 dp，再上移 4 dp |
+| Redmi 8A（60 Hz） | 只有开头帧 15、16（6、16 dp），对图确认是键盘收起 | 同上 |
+
+整段录屏里，内容只往上推。
+
+## 排查 Checklist
+
+- [ ] 用确定性的输入复现（固定回复内容、固定切块），修复前后条件完全一致
+- [ ] 高刷设备先固定刷新率，录完恢复
+- [ ] 检查录屏的帧间隔中位数，确认跑满了刷新率
+- [ ] 按原始帧分析，不要重采样到固定帧率
+- [ ] 每个报出来的下移帧都对着截图确认，排除键盘收起这类误报
+- [ ] 用 A/B 对照（功能开关前后、快慢两台设备）把同一时段的多次跳动拆开
+- [ ] 每个修复单独验证：单测确认测试在逻辑错误时会失败，真机复录确认跳动消失
+
+## 坑速查表
+
+| 症状 | 根因 | 修复 | 章节 |
+|---|---|---|---|
+| 流式中某一行突然变成大号标题，下一帧又变回正文 | 切块停在单独的 `=` / `-` 行上，被当成 setext 下划线 | 流式时暂缓最后一行未写完的下划线形行 | 阶段四·1 |
+| 流式结束那一刻，消息里的异步内容（块级公式、图片）闪一下，伴随长帧 | 落库换 id，LazyColumn 的 key 变了，整条消息重建 | 分开 UI 身份和存储 id，替换时沿用占位的 key | 阶段四·2 |
+| 流式中打开的全屏查看器，回复结束时自己关了 | 查看器按 id 找消息，id 被换掉 | 同上，查看器改按 key 定位 | 阶段四·2 |
+| 换成稳定 key 后列表崩溃，报重复 key | `key` 写成默认值等于 `id` 的构造参数，`copy(id = …)` 不重算默认值 | 改成计算属性 `uiKey ?: id` | 阶段四·2 |
+| 回复以块级公式结尾时，结束那一刻内容往下掉 | 未闭合时显示源码，源码比公式高 | 流式时未闭合的块级公式显示骨架占位 | 阶段四·3 |
+| 骨架占位出现在列表项、引用块外面 | 截断文档后在末尾追加占位 | 由扫描器在原位留占位，交给解析器放进容器 | 阶段四·3 |
+| 链接地址里的 `\[` 让后面整段内容变成骨架 | 任何未闭合的定界符都当成块级公式 | 只认行首起头的定界符 | 阶段四·3 |
+| 抽帧统计说「没有跳动」，肉眼却看到闪 | 重采样到固定帧率，单帧闪跳被合并掉 | 按原始帧分析（`-fps_mode passthrough`） | 阶段二 |
+| 逐帧分析报出开头有下移 | 键盘收起、输入框移动被算成位移 | 只截列表区域，对着截图确认 | 阶段二 |
+
+## 最后
+
+回头看，三个问题有一个共同点：**流式渲染里，每一帧都是一个「中间态」，而代码默认把它当成终态来处理**。Markdown 解析器把半截行当成完整的行，列表把落库前后的消息当成两条不同的消息，公式渲染把没写完的公式当成普通文本。修法也都是同一个方向：让中间态在视觉上「只增不减」。
+
+而这些问题能被拆开，靠的是把「闪了一下」量化成帧号和 dp。肉眼只能告诉你有问题，数字才能告诉你问题在哪、修好了没有。
+
+---
+
+> 这篇是和 Claude Code 一起完成的：它驱动 `adb` 和 `ffmpeg` 完成了录屏、逐帧分析和 A/B 对照，也是它在原始帧里发现了最初被 25 fps 抽帧漏掉的那一跳。三个修复的 PR 和代码审查意见的处理，也是在协作中完成的。
