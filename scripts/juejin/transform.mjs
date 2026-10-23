@@ -34,6 +34,30 @@ export function hasMdxSyntax(body) {
     return false;
 }
 
+// 只对围栏代码块之外的部分做转换：代码示例里的 <video>、<p> 是要原样展示的。
+function outsideFences(body, fn) {
+    return body
+        .split(/(```[\s\S]*?```)/)
+        .map((part, i) => (i % 2 === 1 ? part : fn(part)))
+        .join('');
+}
+
+// 掘金不渲染 <video>，原样发出去会显示成一段 HTML 源码。
+// 换成「封面图 + 链接到视频文件」，读者点封面在浏览器里播放；没有 poster 时退化成文字链接。
+export function convertVideos(body) {
+    return outsideFences(body, (text) => text.replace(/<video\b([^>]*)>[\s\S]*?<\/video>/g, (_, attrs) => {
+        const src = attrs.match(/\ssrc=(["'])(.*?)\1/)?.[2];
+        if (!src) return '';
+        const poster = attrs.match(/\sposter=(["'])(.*?)\1/)?.[2];
+        return poster ? `[![▶ 点击播放视频](${poster})](${src})` : `[▶ 点击播放视频](${src})`;
+    }));
+}
+
+// 视频、图片下方的说明多写成带 style 的 <p>，掘金同样会原样显示；不含其他标签的单行 <p> 转成斜体文字。
+export function convertCaptions(body) {
+    return outsideFences(body, (text) => text.replace(/^<p\b[^>]*>([^<\n]+)<\/p>$/gm, (_, t) => `*${t.trim()}*`));
+}
+
 // 根相对图片/链接路径改写为线上绝对地址（掘金服务器才抓得到）。
 // 只改单斜杠开头的根相对路径，跳过 //protocol-relative 和已有 http(s)。
 export function rewriteImages(body, siteUrl) {
@@ -69,7 +93,8 @@ export function buildArticle({ frontmatter, body, slug, siteUrl }) {
     if (!frontmatter.title) {
         throw new Error(`文章缺少 title：${slug}`);
     }
-    const withImages = rewriteImages(body, siteUrl);
+    // 先转换视频与说明，生成的根相对路径再统一改写成绝对地址
+    const withImages = rewriteImages(convertCaptions(convertVideos(body)), siteUrl);
     const markContent = appendFooter(withImages, slug, siteUrl);
     return {
         title: String(frontmatter.title),

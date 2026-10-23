@@ -4,6 +4,8 @@ import {
     parsePost,
     hasMdxSyntax,
     rewriteImages,
+    convertVideos,
+    convertCaptions,
     appendFooter,
     buildBrief,
     buildArticle,
@@ -91,4 +93,43 @@ test('buildArticle 缺 title 抛错', () => {
         () => buildArticle({ frontmatter: {}, body: 'x', slug: 'no-title', siteUrl: SITE }),
         /缺少 title/,
     );
+});
+
+test('convertVideos 把 <video> 换成封面图链接，无 poster 时退化成文字链接', () => {
+    const body = [
+        '前文',
+        '<video',
+        '  src="/images/demo/a.mp4"',
+        '  poster="/images/demo/a-poster.webp"',
+        '  autoplay loop muted playsinline',
+        '></video>',
+        '<video src="/b.mp4"></video>',
+        '后文',
+    ].join('\n');
+    assert.equal(
+        convertVideos(body),
+        ['前文', '[![▶ 点击播放视频](/images/demo/a-poster.webp)](/images/demo/a.mp4)', '[▶ 点击播放视频](/b.mp4)', '后文'].join('\n'),
+    );
+});
+
+test('convertCaptions 只转换不含其他标签的单行 <p>', () => {
+    assert.equal(convertCaptions('<p style="text-align: center;">8× 慢放，左：修复前</p>'), '*8× 慢放，左：修复前*');
+    const nested = '<p>含 <a href="/x">链接</a></p>';
+    assert.equal(convertCaptions(nested), nested);
+    assert.equal(convertCaptions('行内 <p>x</p> 不转'), '行内 <p>x</p> 不转');
+});
+
+test('围栏代码块里的 <video>、<p> 原样保留', () => {
+    const code = '```html\n<video src="/a.mp4"></video>\n<p>代码里的</p>\n```';
+    assert.equal(convertCaptions(convertVideos(code)), code);
+});
+
+test('buildArticle 中视频封面与链接改写为绝对地址', () => {
+    const article = buildArticle({
+        frontmatter: { title: 't' },
+        body: '<video src="/v.mp4" poster="/p.webp"></video>',
+        slug: 'demo',
+        siteUrl: SITE,
+    });
+    assert.match(article.markContent, /\[!\[▶ 点击播放视频\]\(https:\/\/harlon\.wang\/p\.webp\)\]\(https:\/\/harlon\.wang\/v\.mp4\)/);
 });
